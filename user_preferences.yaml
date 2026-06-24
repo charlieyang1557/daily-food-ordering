@@ -1,0 +1,21 @@
+# user_preferences.yaml — Charlie (SF, CA)
+schedule:
+  order_time: "12:30"
+  timezone: "America/Los_Angeles"
+budget:
+  daily_max_usd: 25
+  auto_approve_under_usd: 18        # ≤18 → auto-order; 18–25 → confirm first
+  rolling_cap_usd: 150              # max autonomous spend per rolling window
+  rolling_window_days: 7
+preferences:                        # SOFT — ranking only; a miss is OK
+  cuisines: [Japanese, Thai, Chinese]
+  favorite_restaurants: ["Fuhuihua"]
+restrictions:                       # HARD — filter + safety; never violated
+  dietary: [vegetarian]
+  allergies: [peanuts]
+  never_order: ["KFC"]
+fallback:
+  restaurant: "Chipotle"            # cheap + customizable → restriction-safe AND under auto-approve
+notifications:
+  channel: "discord"
+  confirmation_timeout_minutes: 20
