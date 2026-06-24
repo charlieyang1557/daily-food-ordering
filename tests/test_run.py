@@ -1,3 +1,4 @@
+from engine.models import DecisionStatus
 from run import StepStatus, run
 
 
@@ -25,5 +26,10 @@ restrictions:
     assert [step.number for step in result.steps] == list(range(1, 12))
     assert result.decision is not None
     assert result.selected_candidate is not None
-    assert result.selected_candidate.restaurant == "Hermetic Cafe"
+    assert result.selected_candidate.restaurant == "Thai Spice"
+    assert result.selected_candidate.item_name == "Vegetarian Pad Thai"
+    assert result.selected_candidate.cuisine == "Thai"
+    assert result.decision.status is DecisionStatus.AUTO
+    assert result.decision.reason == "within_auto_approve"
+    assert result.placed is True
     assert result.steps[-1].status is StepStatus.OK

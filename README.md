@@ -10,6 +10,20 @@ python run.py                 # runs the 11-step pipeline on user_preferences.ya
 pytest                        # the engine + config + run tests
 ```
 
+## Reading `run.py` output
+
+`python run.py` prints the 11-step audit trail for one demo run.
+
+The key fields are:
+
+- `selected_candidate` - the meal the agent chose from discovery.
+- `decision` - the deterministic authority result: `AUTO`, `CONFIRM`, or `BLOCK`.
+- `reason` - why the engine made that decision, such as `within_auto_approve`, `above_auto_approve`, or `allergy_violation`.
+- `severity` - notification/recovery level. `P0` is safety, `P1` is money/order risk, and `P2` is low-stakes info.
+- `placed` - in this skeleton, means "would place." No real food order or payment happens.
+
+For the default config, the demo returns `AUTO / within_auto_approve` because the selected meal is verified safe and costs `$14`, which is under `auto_approve_under_usd`.
+
 ## What's here
 
 Start with `SKILL.md`; it is the primary deliverable and the source of the product contract.

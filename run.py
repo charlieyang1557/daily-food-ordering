@@ -106,18 +106,14 @@ def _claim_slot() -> str:
 
 
 def _discover_candidates(config: UserConfig) -> list[Candidate]:
-    restaurant = (
-        config.preferences.favorite_restaurants[0]
-        if config.preferences.favorite_restaurants
-        else "Thai Spice"
-    )
-    cuisine = config.preferences.cuisines[0] if config.preferences.cuisines else None
+    # Walking-skeleton stub: one coherent, in-budget, safe candidate.
+    # Real discovery would query a provider; this keeps the demo self-consistent.
     return [
         Candidate(
-            restaurant=restaurant,
+            restaurant="Thai Spice",
             item_name="Vegetarian Pad Thai",
             price_usd=14,
-            cuisine=cuisine,
+            cuisine="Thai",
             dietary=config.restrictions.dietary,
             allergens=[],
             verified_safe=True,
