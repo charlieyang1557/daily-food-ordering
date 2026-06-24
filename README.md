@@ -28,7 +28,7 @@ For the default config, the demo returns `AUTO / within_auto_approve` because th
 
 Start with `SKILL.md`; it is the primary deliverable and the source of the product contract.
 
-- Presentation/report: [`presentation.html`](presentation.html)
+- Presentation/report: [view rendered HTML](https://raw.githack.com/charlieyang1557/daily-food-ordering/main/presentation.html) ([source](presentation.html))
 - `SKILL.md` - the product/spec contract for the daily food-ordering skill.
 - `engine/` - the deterministic core: config validation, data models, and AUTO / CONFIRM / BLOCK decision logic.
 - Provider adapters - planned boundary for mock and real food-ordering providers. This is not wired yet.
