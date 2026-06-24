@@ -14,6 +14,7 @@ pytest                        # the engine + config + run tests
 
 Start with `SKILL.md`; it is the primary deliverable and the source of the product contract.
 
+- Presentation/report: [`presentation.html`](presentation.html)
 - `SKILL.md` - the product/spec contract for the daily food-ordering skill.
 - `engine/` - the deterministic core: config validation, data models, and AUTO / CONFIRM / BLOCK decision logic.
 - Provider adapters - planned boundary for mock and real food-ordering providers. This is not wired yet.
