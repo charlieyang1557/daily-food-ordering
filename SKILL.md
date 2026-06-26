@@ -1,218 +1,187 @@
 ---
 name: daily-food-ordering
 description: >
-  Use this skill to order a daily meal for the user. It runs automatically
-  when the user's configured order_time arrives. Also use it when the user
-  says "order food" or "place an order," or "set up daily food ordering," or
-  asks to change or update the current config.
+  Order the user's single daily meal, safely and autonomously. Runs on a daily
+  schedule (an OpenClaw cron job) and also when the user says "order food,"
+  "place an order," "set up daily food ordering," or asks to change the config.
 
-  It works within a per-meal budget set by the user. To avoid asking every
-  time, the user can set an auto-approve threshold — orders under it go
-  through automatically. When the agent is uncertain or can't decide, it
-  either asks the user to confirm or falls back to their pre-set backup,
-  scaled to severity. It never spends beyond the limits the user set, never
-  acts outside the authority the user granted, and never orders food that
-  violates the user's dietary or allergy restrictions.
+  It works within a per-meal budget. Orders under the user's auto-approve
+  threshold go through automatically; pricier-but-in-budget orders ask for a
+  yes; anything over budget or unsafe is refused, not asked about. It never
+  spends beyond the user's limits, never acts outside granted authority, and
+  never orders food that violates the user's dietary or allergy restrictions.
 
-  It reads config from user_preferences.yaml. Do NOT use it for ordering
-  anything other than the user's own single daily meal (e.g. team lunches
-  or group orders).
-license: MIT
-compatibility: >
-  Backend-agnostic — works with any LLM backend, or none (the deterministic
-  safety logic runs without a model). Requires Python 3.11+ and network
-  access to a food-ordering provider.
-allowed-tools: Bash(python:*)
+  Provider is pluggable: a deterministic mock (default; for tests/dry-runs) or a
+  real DoorDash adapter (Playwright) that retrieves a real menu and drives a
+  real cart to checkout but HARD-STOPS before payment. Reads config from
+  user_preferences.yaml. Do NOT use it for anything but the user's own single
+  daily meal (no team lunches / group orders).
+allowed-tools: ["exec", "message"]
 metadata:
-  author: Charlie Yang
-  version: 0.1.0
+  openclaw:
+    emoji: "🍱"
+    requires:
+      bins: ["python3"]
 ---
+
+# Daily Food Ordering
+
+A deterministic safety engine decides; a provider fetches options and places the
+order; the agent only ranks/phrases and relays notifications. The safety, budget,
+and final AUTO/CONFIRM/BLOCK call are **code** (`engine/` + `run.py`) and run with
+any LLM backend or none. The agent must NOT re-decide budget or safety itself.
+
+Run everything from the skill directory:
+
+    cd ~/.openclaw/workspace/skills/daily-food-ordering
+
+## One-time setup (real DoorDash only)
+
+DoorDash sits behind a human-check wall and shows menus only to a logged-in
+session. Warm a persistent browser profile ONCE, by a human:
+
+    [code]  python3 run.py --provider doordash --login
+
+A headed browser opens; the human passes the check, signs in, and sets a
+delivery address. The profile persists, so later runs reuse the session. Skip
+this entirely for mock/dry-run.
 
 ## Instructions
 
-When invoked, follow these steps in order. Steps marked [code] MUST call the
-deterministic scripts — do NOT reason about budgets, restrictions, or the order
-decision yourself. Steps marked [llm] may use model judgment.
+When invoked, run the deterministic pipeline, then resolve its verdict. Steps
+marked `[code]` MUST be done by executing the script — do NOT reason about
+budgets, restrictions, or the order decision yourself. Steps marked `[agent]`
+are yours (ranking is already inside the engine; your job is phrasing + the
+human confirm loop + delivery).
 
-### Step 1 — Claim today's slot                              [code]
-Compute "today" in the user's tz; check the ledger:
-- Slot already claimed / order exists today → no-op, log "already ran," EXIT.
-- Else claim it: write a pending marker + a fresh idempotency key → continue.
-Run: python scripts/claim_slot.py --date {today} --tz {user_tz}
-Ledger unreachable → do NOT proceed (blind run risks a double order); notify + stop.
-→ Produces the idempotency key reused by Steps 9 and 10.
+### Step 1 — Run the deterministic engine                    [code]
+Execute the pipeline. It claims today's slot (idempotency key), loads + validates
+config, asks the provider to discover candidates, applies the hard filters, runs
+the engine's single AUTO/CONFIRM/BLOCK decision, and on AUTO asks the provider to
+place the order (the real provider stops before pay).
 
-### Step 2 — Load & validate config                          [code]
-Read user_preferences.yaml: meal time + timezone, budget + auto-approve budget,
-preferred cuisines + restaurants, and the dietary restrictions + food allergies
-(so we are not sending the user to the hospital). Store parsed values to JSON for
-tracking. Then validate before continuing:
-- daily_max missing → fail loud + stop (the one REQUIRED field).
-- auto_approve_under > daily_max (contradiction) → fail loud + stop.
-- unknown timezone / non-standard allergen → fail loud.
-Run: python scripts/load_config.py --path user_preferences.yaml
+    [code]  python3 run.py --provider mock --config user_preferences.yaml
+    # real platform: python3 run.py --provider doordash --config user_preferences.yaml
 
-### Step 3 — Discover candidates                             [code+llm]
-Search the provider for the user's preferred cuisines + restaurants within
-delivery range, filtered to open-now (open at order_time in the user's tz).
-Run: python scripts/discover.py --tz {user_tz} --at {order_time}
-If nothing comes back → this is the ⭐"no restaurant open" failure → route to
-Step 4's fallback/empty-set handling.
+It prints JSON: `{decision:{decision,reason,severity}, placed, order_result, steps}`.
+Parse it. Do not recompute the decision.
 
-### Step 4 — Filter by hard restrictions                     [code]
-Drop anything that violates a hard line — allergies + dietary first, then
-never_order. Mark any candidate whose compliance can't be verified as
-"uncertain" (do not silently keep it). Safety only — budget is Step 6.
-- Dietary-uncertainty > drop them
-Empty-set branch (the headline job of this step):
-- If the safe set is EMPTY → this is the P0 "no compliant option."
-  → restriction-safe fallback (re-checked), else BLOCK + loud notify.
-- NEVER relax a hard restriction to fill the set.
-Run: python scripts/filter_safe.py
+If it exits non-zero with `{"error":"config_invalid",...}` → the config is unsafe
+to use; notify the user with the exact detail, fix nothing silently, place nothing.
+If `{"error":"provider_unavailable",...}` (DoorDash bot wall / not logged in) →
+notify the user to re-run `--login`; place nothing.
 
-### Step 5 — Rank by soft preferences                        [llm]
-Use the model to rank the safe candidates by user preference (cuisine order,
-favorite restaurants, dishes, flavors). Apply a ranking penalty to dislikes —
-penalty only, never a block or confirm. A miss here is OK.
+### Step 2 — Resolve the verdict                              [agent + code]
+Read `decision.decision`:
 
-### Step 6 — Select & price                                  [code]
-Price the ranked candidates; keep the in-budget set (≤ daily_max). Select the
-best-ranked option within budget; among ties, prefer the cheaper one.
-If NO candidate is within budget (cheapest compliant > daily_max) → flag for
-BLOCK at Step 7. Do not pick an over-ceiling option.
-Run: python scripts/select_price.py
+- **AUTO** → already placed (mock) or carted-and-stopped-before-pay (DoorDash).
+  Go to Step 3 and send the calm "ordered" notification.
+- **CONFIRM** → nothing placed yet. Notify the user (severity-calibrated) with
+  what would be ordered and why it needs a yes (cost band / rolling cap /
+  fallback-in-use). Wait up to `confirmation_timeout_minutes` (default 20):
+  • "yes" → re-run Step 1; on AUTO-equivalent placement, notify.
+  • "no"  → acknowledge, place nothing.
+  • silence → SKIP. The one exception is `fallback_in_use`, which is
+    pre-authorized and may proceed. An over-threshold order never places on
+    silence.
+- **BLOCK** → not orderable as selected (over daily_max, no compliant/safe
+  option, allergen). Do NOT ask the user to approve it. Try the configured
+  fallback if present and re-checked safe + ≤ daily_max (treat as a
+  fallback-in-use CONFIRM); otherwise send a LOUD notification with the reason
+  and place nothing.
 
-### Step 7 — Decide (AUTO / CONFIRM / BLOCK)                 [code]
-Re-run all hard checks on the selected candidate (catch anything missed), then:
-- AUTO iff (≤ auto_approve and <= rolling-cap and verified-safe)
-- auto_approve_under < price ≤ daily_max      → CONFIRM
-- cumulative + this order > rolling_cap → CONFIRM
-- violates a hard line (over daily_max, dietary, allergies) → BLOCK
-Run: python scripts/decide.py
-Returns: {decision, reason, severity}.
+### Step 3 — Notify via the `message` tool                    [agent]
+Send one severity-calibrated Discord message. Never fully silent; interrupt only
+when actionable.
 
-### Step 8 — Resolve the decision        [code decides · llm composes]
-AUTO → place (Step 9).
+    message → { "action": "send", "channel": "discord",
+                "to": "channel:1481943668066615437",
+                "message": "🍱 Ordered Vegetarian Pad Thai from Thai Spice — $14 (auto, within budget)." }
 
-CONFIRM → notify (severity-calibrated) + wait (confirmation_timeout = 20 min):
-  • "yes"    → place (Step 9)
-  • "no"     → skip + acknowledge
-  • timeout  → on silence, do ONLY what's already authorized:
-       fallback-in-use → place the fallback (pre-authorized: safe + ≤ auto_approve)
-       everything else (cost band · rolling-cap · dietary-uncertain) → skip
-       — an over-threshold or unverified order never places without an explicit "yes"
+Calibrate by severity: P0 (safety) is loud and explicit; P1 (money/wrong order)
+is clear; P2 (info) is calm. For DoorDash, say plainly that the order was
+**carted and stopped before payment** — no charge was made.
 
-BLOCK → not orderable as selected. Try the configured fallback:
-  • fallback present & re-checked safe + ≤ daily_max → treat as a fallback-in-use CONFIRM (above)
-  • no safe fallback → loud notify + skip   ← NOT "confirmation": there's no safe order to approve
+## Payment safety (non-negotiable)
 
-### Step 9 — Place the order                                 [code]
-Using the idempotency key from Step 1:
-- API down / timeout → retry N× WITH the key → still failing → skip
-  (never charged-but-unconfirmed).
-- payment declined → BLOCK + notify ("update your payment"); do NOT retry the
-  dead card, do NOT swap to another card.
-- partial failure (charged, state unknown) → do NOT blind-retry; reconcile via
-  the key ("did order <key> go through?"); unresolved → loud, honest P1
-  escalation ("I may have been charged ~$X but can't confirm — please check;
-  I'm not retrying, to avoid a double charge").
-Run: python scripts/place_order.py --key {idempotency_key}
+A real account is treated like a live trade: this skill NEVER completes a charge.
+The DoorDash adapter stops at the checkout/pay screen and returns
+`STOPPED_BEFORE_PAYMENT` with `charged: false`. Completing a real charge would
+require ALL of: the `--complete-payment` flag, a typed env confirmation
+(`DAILY_FOOD_CONFIRM_CHARGE`), and code wiring this build deliberately omits.
+Do not attempt to click "Place Order" through any other tool.
 
-### Step 10 — Post-order self-audit                          [code]
-Detect: re-run the hard checks against the FINAL placed order (+ accept a
-user-reported "this is wrong"). If a violation surfaces, recover by INHERITED
-severity (allergy = P0, over-budget = P1, taste/dislike = P2):
-1. Contain harm first — for P0, notify loudly and clearly: "DO NOT EAT"
-   (this outranks the refund).
-2. Undo if possible — attempt to cancel within the provider's window.
-3. Own it — plain admission FIRST ("I ordered X, which violates your shellfish
-   restriction. My mistake."), THEN issue the refund/credit. A silent refund
-   is not owning it.
-4. Self-throttle — after a P0 breach, the agent drops its OWN auto_approve
-   toward 0 (confirm-everything) and tells the user: "I've paused autonomous
-   ordering until you re-enable it." Severity-scaled: a P2 taste-miss just
-   learns; a P0 breach pauses autonomy. Asking for less power IS the apology.
-5. Learn — log the episode to the ledger; blocklist the item/restaurant and
-   distrust the menu source that gave bad data, so it can't recur.
+## Triggering a failure path (for testing)
 
-### Step 11 — Record & notify                               [code]
-Record every step + result to the ledger (idempotency, audit, rolling-cap,
-learning). Push one severity-calibrated notification: what was ordered and why
-(AUTO / CONFIRMED / BLOCKED, preferred pick or fallback). Never fully silent;
-interrupt only when actionable.
-Run: python scripts/record_notify.py
----
+    [code]  python3 run.py --scenario over_budget    # BLOCK over_daily_max
+    [code]  python3 run.py --scenario unavailable     # BLOCK (no available option)
+    [code]  python3 run.py --scenario empty           # BLOCK no_candidate
+    [code]  python3 run.py --scenario allergen        # BLOCK allergy_violation (P0)
 
 ## Operating principles
-Every run obeys these, in priority order:
-- **Consequence asymmetry** — Soft preferences (cuisines, favorite/disliked spots) are optimized for; a miss is fine. Hard restrictions (dietary, allergies) are absolute: a missed preference is a mild annoyance, but a violated restriction breaks the user's ethics or sends them to the ER.
-- **Standing authority** — The agent acts only within the limits the user pre-authorized. It never reads uncertainty, silence, or failure as approval — it falls back to what's already authorized and waits for an explicit yes. Uncertainty is never a yes.
-- **Fail loud, never silent** — No failure is ever dropped silently; every one is recorded. The agent surfaces failures with their severity and recovery step, loudness scaled to consequence — a P0 interrupts, a P2 is a quiet log.
-- **Confirm within authority; block at hard lines** — CONFIRM asks for a yes on something within limits; BLOCK refuses a hard-line crossing (over-budget, unsafe) and notifies with the reason. The agent never asks the user to approve the unsafe or the over-ceiling.
-- **Trust is a dial** — Autonomy moves both ways: the user raises auto_approve to grant trust over time; after a breach the agent lowers its own, scaled to severity, until the user restores it. Earned up, spent down.
-- **Deterministic safety, optional intelligence** — Safety logic (allergies, dietary, budget) is hard-coded and runs with any LLM or none; the model only ranks and phrases, so it can never hallucinate a safety decision.
----
+
+In priority order, every run obeys:
+- **Consequence asymmetry** — soft preferences (cuisines, favorites) are
+  optimized for and a miss is fine; hard restrictions (dietary, allergies) are
+  absolute. A missed preference is an annoyance; a violated restriction is the ER.
+- **Standing authority** — act only within pre-authorized limits. Uncertainty,
+  silence, and failure are never read as approval; fall back to what is already
+  authorized and wait for an explicit yes.
+- **Fail loud, never silent** — no failure is dropped; each is surfaced with its
+  severity and recovery step, loudness scaled to consequence.
+- **Confirm within authority; block at hard lines** — CONFIRM asks for a yes on
+  something within limits; BLOCK refuses a hard-line crossing and explains why.
+  Never ask the user to approve the unsafe or the over-ceiling.
+- **Trust is a dial** — the user raises `auto_approve_under` to grant autonomy
+  over time; after a breach the agent lowers its own, scaled to severity.
+- **Deterministic safety, optional intelligence** — allergy/dietary/budget logic
+  is hard-coded and runs with any LLM or none; the model only ranks and phrases,
+  so it can never hallucinate a safety decision.
 
 ## Configuration
 
-all behavior is driven by user_preferences.yaml; only daily_max is required, everything else is safe-by-default.
-
-Six groups:
-- **schedule** — when it runs: order_time + timezone, user-local; defaults to system tz
-- **budget** — daily_max (REQUIRED), auto_approve_under, rolling_cap + window
-- **preferences** (SOFT) — cuisines, favorite restaurants → used for ranking
-- **restrictions** (HARD) — dietary, allergies, never_order → used for filtering + safety
-- **fallback** — one pre-vetted safe default
-- **notifications** — channel (pluggable)+ confirmation timeout
-
-**Required:** Only daily_max is required. Everything else is safe-by-default, so the agent works from minimal setup and never interrogates the user field-by-field on each run. Its default — auto_approve_under: 0 — means confirm every order until the user grants autonomy. This is the deliberate resolution of the starter schema's confirmation_required flag: instead of a blunt on/off, confirmation becomes a spending threshold the user dials up as trust grows.
-
-Soft vs. hard — Preferences rank; restrictions gate. A soft miss is fine; a hard line is never crossed.
-
-No field can disable a safety or budget check — those aren't configurable.
-
-Full field reference, types, defaults, and allowed values (cuisines, dietary terms,
-FDA Big-9 allergens) → references/schema.md.
----
+All behavior is driven by `user_preferences.yaml`; only `daily_max_usd` is
+required, everything else is safe-by-default. Six groups: **schedule** (order_time
++ timezone), **budget** (daily_max REQUIRED, auto_approve_under, rolling_cap +
+window), **preferences** (SOFT: cuisines, favorite_restaurants — ranking only),
+**restrictions** (HARD: dietary, allergies, never_order — filter + safety),
+**fallback** (one pre-vetted safe default), **notifications** (channel + confirm
+timeout). The default `auto_approve_under: 0` means confirm every order until the
+user grants autonomy. No field can disable a safety or budget check. Full field
+reference → `references/schema.md`.
 
 ## Error handling & fallback
 
-Every failure runs one engine, not ad-hoc handling: **detect → classify severity (P0 safety · P1 money/wrong-order · P2 inconvenience) → resolve (AUTO / CONFIRM / BLOCK) → notify (scaled to severity) → record.**
+One engine for every failure: **detect → classify severity (P0 safety · P1
+money/wrong-order · P2 inconvenience) → resolve (AUTO/CONFIRM/BLOCK) → notify
+(scaled) → record.** Headline cases:
+- invalid config → fail loud at load, name each fix, place nothing
+- no restaurant / no candidate → fallback, else BLOCK + notify
+- no compliant/safe option (P0) → safety-checked fallback, else BLOCK + loud notify
+- DoorDash bot wall / not logged in → `provider_unavailable`; tell the user to
+  re-run `--login`; place nothing
+- provider error mid-flight → recorded as `FAILED`, never blind-retried, never
+  charged-but-unconfirmed
 
-Per-failure handling is inline in the Instructions. Headline cases:
-- no restaurant open (P2) → fallback → skip if none → BLOCK + notify
-- no compliant/safe option (P0) → safety-checked fallback → BLOCK + loud notify if none,
-- API down → retry + idempotency key → skip · payment declined → BLOCK ·
-  partial failure → reconcile, never double-charge
-- wrong order, caught post-order → contain harm → undo → own it → self-throttle → learn
-
-Governing rule: on uncertainty or silence, fall back to standing authority; never escalate spend or safety risk; never fully silent.
-
-invalid config (bad timezone / non-standard allergen / ingredient in never_order) → fail loud at load, name each fix, place nothing
-
-Full failure taxonomy (~20 modes across config / discovery / budget / execution / post-order) → references/failure-modes.md.
----
+Full taxonomy → `references/failure-modes.md`. Design rationale →
+`references/trust-model.md`.
 
 ## Examples
 
 ### Example 1 — Happy path (AUTO)
-Trigger: scheduled 12:30, Charlie's config
-Actions: claim slot → discover → filter (vegetarian, no peanuts) → rank →
-          select $14 (≤ $18 auto) → AUTO → place → record
-Result:  ordered silently; one calm notification: "Ordered Pad Thai from Thai Spice, $14"
+`python3 run.py` → discover (mock) → safe vegetarian $14 ≤ $18 auto → AUTO →
+placed. Notify: "🍱 Ordered Vegetarian Pad Thai from Thai Spice, $14."
 
-### Example 2 — In the confirm band (CONFIRM)
-Trigger: best safe option is $21 — between auto_approve $18 and daily_max $25
-Actions: claim slot → discover → filter (vegetarian, no peanuts) → rank →
-          select $21 (between $18 and $25) → decide = CONFIRM (cost) → notify + wait 20 min → user "yes" → place
-Result:  ordered after one confirmation; on silence it skips — an over-auto-approve order never places without an explicit "yes."
+### Example 2 — Confirm band (CONFIRM)
+Best safe option is $21 (between $18 auto and $25 max) → CONFIRM (cost). Notify +
+wait 20 min → "yes" → place. On silence it skips.
 
-### Example 3 — No safe option (BLOCK)              [the safety engine, live]
-Trigger: scheduled lunch run for Charlie. Restaurants ARE open — but every
-         open option is peanut-risk or can't verify peanut-free, AND Chipotle
-         (his fallback) is closed today.
-Actions: claim → discover (open-now: results EXIST) → filter: safe set EMPTY
-         → re-check fallback → fallback unavailable too → no safe option anywhere → BLOCK
-Result:  nothing ordered; LOUD notify — "Skipped today: nothing safe for your
-         peanut allergy was available and your backup was closed. I won't relax
-         that. Widen range or pick manually?"
+### Example 3 — Over budget (BLOCK)   [the failure path, live]
+`python3 run.py --scenario over_budget` → only option is $99 > $25 max → BLOCK
+`over_daily_max`. Nothing placed; notify with the reason.
+
+### Example 4 — Real DoorDash (stops before pay)
+`python3 run.py --provider doordash` on a warmed profile → real menu → add item →
+checkout → STOP. `order_result.status = STOPPED_BEFORE_PAYMENT`, `charged: false`.
+Notify: "🍱 Carted <item> from <restaurant> on DoorDash and stopped before
+payment — no charge made."

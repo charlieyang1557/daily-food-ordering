@@ -1,0 +1,14 @@
+# DEMO — unrestricted, for the REAL DoorDash stop-before-pay walkthrough.
+# No dietary/allergy restrictions, so real (unverifiable) DoorDash items are not
+# safety-gated and a real dish can reach AUTO -> add to cart -> stop before pay.
+# (With restrictions set, real DoorDash items are verified_safe=False and the
+# engine BLOCKs them — which is the correct, safety-first behavior, but not what
+# you want to show for the place-order walkthrough.)
+budget:
+  daily_max_usd: 80
+  auto_approve_under_usd: 80
+preferences:
+  cuisines: [Thai]
+notifications:
+  channel: "discord"
+  confirmation_timeout_minutes: 20

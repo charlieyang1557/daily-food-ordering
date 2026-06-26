@@ -1,0 +1,27 @@
+{
+  "_comment": "Daily trigger for the skill. This lives in OpenClaw's cron, NOT in SKILL.md. Append the object below to ~/.openclaw/cron/jobs.json -> jobs[]. Shipped DISABLED (enabled:false). 'to' is the user's connected Discord channel. Schedule mirrors user_preferences.yaml order_time 12:30 America/Los_Angeles.",
+  "id": "2d41ff9d-4c33-4fe2-9e05-b372ca9c4b5e",
+  "agentId": "main",
+  "name": "daily-food-ordering",
+  "enabled": false,
+  "createdAtMs": 1782426458556,
+  "schedule": {
+    "kind": "cron",
+    "expr": "30 12 * * *",
+    "tz": "America/Los_Angeles"
+  },
+  "sessionTarget": "isolated",
+  "wakeMode": "now",
+  "payload": {
+    "kind": "agentTurn",
+    "message": "Run the daily-food-ordering skill exactly as specified in skills/daily-food-ordering/SKILL.md. Run the deterministic engine (cd into the skill dir, then `python3 run.py --provider doordash --claim-slot --config user_preferences.yaml`). Do NOT recompute the budget/safety decision yourself, and do NOT fall back to `--provider mock` — the mock never contacts a restaurant and would report a fake success. If the engine returns provider_unavailable (DoorDash bot wall / not logged in), SKIP today and notify the user to re-run `--login`; place nothing. The DoorDash adapter stops before payment — never complete a charge. Resolve the AUTO/CONFIRM/BLOCK verdict per the SKILL, and post one severity-calibrated summary to Discord channel 1481943668066615437 via the message tool.",
+    "timeoutSeconds": 600
+  },
+  "delivery": {
+    "mode": "announce",
+    "channel": "discord",
+    "to": "channel:1481943668066615437"
+  },
+  "description": "Daily meal order at 12:30 PT. DISABLED by default — enable only after a one-time DoorDash --login. Stops before payment; never charges.",
+  "state": {}
+}

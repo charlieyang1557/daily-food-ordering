@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+# Local browser profile + screenshots created by the DoorDash adapter at runtime
+.daily-food-ordering/
+*.png

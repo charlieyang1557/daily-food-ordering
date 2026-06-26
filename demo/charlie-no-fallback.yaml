@@ -1,0 +1,15 @@
+# DEMO — trusted, but NO fallback configured.
+# Used to show a CLEAN hard BLOCK (refuse + place nothing) when there is no safe
+# alternative — e.g. over-budget or an unsafe-only option. (With a fallback set,
+# those blocks are rescued into a fallback-in-use CONFIRM instead.)
+budget:
+  daily_max_usd: 25
+  auto_approve_under_usd: 18
+preferences:
+  cuisines: [Japanese, Thai, Chinese]
+restrictions:
+  dietary: [vegetarian]
+  allergies: [peanuts]
+notifications:
+  channel: "discord"
+  confirmation_timeout_minutes: 20

@@ -1,78 +1,148 @@
-# Daily Food Ordering Agent Skill
+# Daily Food Ordering Agent Skill (v2)
 
-A daily meal-ordering agent that aims for safe autonomy through deterministic guardrails: the model may rank and phrase, but safety, budget, and final authority are code.
+An OpenClaw skill that orders the user's single daily meal with **safe autonomy**:
+the model may rank and phrase, but safety, budget, and the final order decision
+are deterministic code. v2 adds a **real DoorDash provider** (Playwright) behind a
+formal provider interface — real menu retrieval and a real cart driven to
+checkout, **hard-stopping before payment**.
 
 ## Quickstart
 
 ```bash
-pip install pyyaml pytest        # Windows: also pip install tzdata
-python run.py                 # runs the 11-step pipeline on user_preferences.yaml
-pytest                        # the engine + config + run tests
+pip install -r requirements.txt
+python -m playwright install chromium     # for the real DoorDash provider
+
+python run.py                 # mock provider, happy path (dry & safe)
+python run.py --scenario over_budget       # trigger the budget-exceeded failure path
+pytest                        # 39 tests: engine + config + run + providers + adapter
 ```
+
+Install as an OpenClaw skill on this machine (copies the skill + registers the
+disabled daily cron trigger):
+
+```bash
+bash install.sh
+```
+
+## Architecture (what runs)
+
+```
+config (user_preferences.yaml)
+        |
+        v
+   run.py  -- the 11-step orchestrator; the skill execs this, the LLM does not re-decide
+        |
+        |-- Provider.discover(config) -------------+
+        |      MockProvider  (deterministic, tests) |   provider boundary
+        |      DoorDashProvider (Playwright, real)  -+   (providers/)
+        |
+        |-- engine/  -- load_config + decide()      <- deterministic safety/budget core (unchanged from v1)
+        |      AUTO / CONFIRM / BLOCK
+        |
+        +-- Provider.place_order(...) on AUTO  -> DoorDash stops before pay (charged: false)
+```
+
+- **`engine/`** — `config.py` (validation), `models.py` (types), `decision.py`
+  (the AUTO/CONFIRM/BLOCK call). This is the safety core; it is **byte-unchanged
+  from v1** and runs with any LLM backend or none.
+- **`providers/`** — `base.py` (the `Provider` protocol + `OrderResult`),
+  `mock.py` (deterministic stand-in + failure scenarios), `doordash.py` (the real
+  Playwright adapter).
+- **`run.py`** — loads config, asks the provider for candidates, runs the hard
+  filters, calls `decide()`, and on AUTO places the order. Prints a JSON audit
+  trail.
+- **`SKILL.md`** — the OpenClaw skill spec (frontmatter + ordered `[code]`/`[agent]`
+  steps). **`references/cron-job.json`** — the daily trigger for OpenClaw's cron.
+
+## What changed from v1
+
+| v1 | v2 |
+|---|---|
+| Provider was a *planned* seam; discovery was an inline stub in `run.py` | Formal `Provider` interface; `run.py` injects the provider |
+| Mock only, conceptual | `MockProvider` (kept, for tests) **+ real `DoorDashProvider`** (Playwright, persistent profile) |
+| No real platform | Real DoorDash menu retrieval + cart → checkout, **hard stop before pay** |
+| Spec referenced `scripts/*.py` that didn't exist | `[code]` steps exec the real `run.py` |
+| Generic notifications | OpenClaw `message` tool → Discord; daily cron in `jobs.json` |
+| Frontmatter had `compatibility`, `metadata.author/version` | Trimmed to OpenClaw-recognized keys (`name`, `description`, `license`, `allowed-tools`, `metadata.openclaw`) |
 
 ## Reading `run.py` output
 
-`python run.py` prints the 11-step audit trail for one demo run.
+`python run.py` prints the 11-step audit trail. Key fields: `decision`
+(`AUTO`/`CONFIRM`/`BLOCK`), `reason` (e.g. `within_auto_approve`,
+`over_daily_max`, `allergy_violation`), `severity` (P0 safety · P1 money · P2
+info), `placed`, and `order_result` (the structured receipt — for DoorDash,
+`status: STOPPED_BEFORE_PAYMENT`, `charged: false`).
 
-The key fields are:
+## Triggerable failure paths
 
-- `selected_candidate` - the meal the agent chose from discovery.
-- `decision` - the deterministic authority result: `AUTO`, `CONFIRM`, or `BLOCK`.
-- `reason` - why the engine made that decision, such as `within_auto_approve`, `above_auto_approve`, or `allergy_violation`.
-- `severity` - notification/recovery level. `P0` is safety, `P1` is money/order risk, and `P2` is low-stakes info.
-- `placed` - in this skeleton, means "would place." No real food order or payment happens.
+```bash
+python run.py --scenario over_budget   # BLOCK over_daily_max  (budget exceeded)
+python run.py --scenario unavailable   # BLOCK                 (item unavailable)
+python run.py --scenario allergen      # BLOCK allergy_violation (P0 safety)
+python run.py --provider doordash --headless   # provider_unavailable (bot wall) — graceful
+```
 
-For the default config, the demo returns `AUTO / within_auto_approve` because the selected meal is verified safe and costs `$14`, which is under `auto_approve_under_usd`.
+## Payment safety (a real account = a live trade)
 
-## What's here
+The skill **never completes a charge.** The DoorDash adapter drives the cart to
+the checkout/pay screen, captures the order summary + a screenshot, and returns
+`STOPPED_BEFORE_PAYMENT`. There is **no code path that clicks "Place Order"** —
+`_complete_payment` is deliberately unwired and raises. Even the `--complete-payment`
+flag plus the `DAILY_FOOD_CONFIRM_CHARGE` env confirmation only passes the gates;
+the actual charge is not implemented in this build.
 
-Start with `SKILL.md`; it is the primary deliverable and the source of the product contract.
+## Assumptions & scope decisions
 
-- Presentation/report: [view rendered slides](https://charlieyang1557.github.io/daily-food-ordering/presentation.html) ([source](presentation.html))
-- `SKILL.md` - the product/spec contract for the daily food-ordering skill.
-- `engine/` - the deterministic core: config validation, data models, and AUTO / CONFIRM / BLOCK decision logic.
-- Provider adapters - planned boundary for mock and real food-ordering providers. This is not wired yet.
-- `run.py` - an 11-step walking skeleton that loads config, discovers a stub candidate, runs the decision engine, and records the step outcomes.
-- `references/` - supporting docs: `trust-model.md`, `failure-modes.md`, and `schema.md`.
+- **DoorDash needs a human-warmed profile.** doordash.com is behind a Cloudflare
+  human-check and shows menus only to a logged-in session with a delivery
+  address. Headless/fresh browsers are hard-walled (verified during scoping). So
+  the adapter uses a **persistent Chrome profile**: a human runs
+  `python run.py --provider doordash --login` once. Cold runs detect the wall and
+  raise `ProviderUnavailable` — an expected, recorded failure, never a silent
+  proceed.
+- **Real DoorDash candidates are `verified_safe=False`.** DoorDash can't reliably
+  confirm allergens/dietary tags, so for a user *with* restrictions the engine
+  correctly **BLOCKs** real candidates as `unverified_safety`. This is
+  safety-first behavior, not a bug. Unrestricted users get AUTO/CONFIRM by price.
+- **Selectors are DOM-dependent.** They are centralized in `providers/doordash.py`
+  with layered fallbacks (`data-anchor-id` / `data-testid` / role+text);
+  `DoorDashProvider.diagnose()` dumps live markers to re-tune them against a real
+  logged-in session.
+- **The cron trigger ships disabled.** `references/cron-job.json` (and `install.sh`)
+  register the job with `enabled:false`; it never fires until a human flips it on
+  after logging in.
+- `engine/` is the trust boundary and is unchanged; `verified_safe` is set by the
+  provider; v1 handles one daily meal slot.
 
-The split is deliberate: safety, budget, and decision checks are code, so they run with any LLM or with no LLM at all. A model can help with ranking candidates or writing notifications, but it never gets to decide whether an unsafe or over-budget order is allowed.
+## What I'd build next
 
-## Key Design Decisions
+- **`place_order` store-page tuning** — discovery reads dishes from the search
+  page (robust), but those cards don't carry a per-dish store URL, so
+  `place_order` currently can't reliably navigate into the dish's store to add
+  it to cart (it fails closed). Carry the store URL through discovery and tune
+  the add-to-cart / checkout selectors against a live cart.
+- Parse the full checkout breakdown (line items, fees, tax, tip) into
+  `OrderResult.summary`. *(The total is already reconciled against `daily_max`,
+  failing closed if missing or over — see `_reconcile_budget`.)*
+- A persisted ledger for rolling-cap, learning, and graduated autonomy. *(Per-day
+  idempotency is now durable — `--claim-slot` writes an atomic marker under
+  `~/.daily-food-ordering/slots/`.)*
+- Distinguish "sold out → P2" from "no safe option → P0" at the run level (today
+  an all-unavailable set collapses to `no_candidate` after filtering).
+- A second provider (UberEats/Yelp) behind the same interface to prove
+  swappability, and a config wizard that suggests local safe fallbacks.
 
-The fuller rationale lives in the decision table in `references/trust-model.md`. The headline choices:
+## Scope — deliberately not included
 
-- **Tiered decisions:** every run resolves to `AUTO`, `CONFIRM`, or `BLOCK`. Routine orders can proceed; cost-band or rolling-cap cases ask; hard-line crossings refuse.
-- **Consequence asymmetry:** preferences are soft, restrictions are hard. Missing a favorite cuisine is fine. Violating an allergy is not.
-- **Deterministic safety:** allergy, dietary, budget, and `never_order` checks are hard-coded and re-checked at decision time.
-- **Trust is a dial:** the user grants autonomy with `auto_approve_under_usd`; after a serious breach, the agent should self-throttle until the user restores trust.
+- Completing a real payment (intentionally unwired — see Payment safety).
+- Defeating Cloudflare via fingerprint spoofing (fragile and bad-faith; the
+  warmed-profile path is the honest answer).
+- A production scheduler beyond OpenClaw's cron; multi-meal slots.
 
-## Assumptions
+The cuts are the point: the dangerous parts — safety, budget, the order decision,
+and the payment stop — are deterministic, tested, and proven against the real
+platform before the plumbing gets fancy.
 
-- A mock provider is used for development because no open-source food API covers real menus, payment, and order state well enough for this exercise.
-- v1 handles one daily meal slot.
-- Notifications are runtime-bound. The config names a channel, but the runtime decides how to send messages.
-- Provider candidates should use standardized allergen and dietary tags.
-- `verified_safe` is set by the provider. Candidates default to unverified until the provider confirms safety metadata is complete.
-
-## What I'd Build Next
-
-- Multi-meal slots, using the same claim/idempotency model.
-- A real provider adapter, such as Yelp or DoorDash behind the same interface.
-- Persisted graduated-autonomy state for rolling caps, incidents, and self-throttling.
-- A config wizard that suggests local restaurants and safe fallback choices.
-- Dietary-uncertainty opt-in confirmation. v1 drops uncertain candidates instead.
-- Cost-band downgrade behavior. v1 keeps the timeout rule simpler: skip on silence unless the fallback is already authorized.
-
-## Scope - Deliberately Not Included
-
-This version favors depth over breadth. It proves the trust boundary first: config validation, hard restrictions, budget authority, and the final decision engine.
-
-The following are intentionally out of scope for v1:
-
-- Real payments or real order placement. Those need a provider integration and idempotent reconciliation.
-- A dedicated `filter_safe` pre-pass. Safety is already enforced deterministically inside `decide()` (allergy, dietary, `never_order`, fully tested). Pulling it into a separate pre-filter that drops unsafe candidates before ranking is a clean architecture refinement, not a safety gap.
-- Persistent ledger storage. The skeleton returns step records in memory.
-- A production scheduler. The skill can be triggered externally; `run.py` is the demo entry point.
-- Rich notification flows. The decision output contains the reason and severity, but channel delivery is left to runtime wiring.
-
-Those cuts are the point: the dangerous parts are deterministic and tested before the plumbing gets fancy.
+The fuller design rationale lives in `references/trust-model.md`; the full config
+schema in `references/schema.md`; the failure taxonomy in
+`references/failure-modes.md`.
