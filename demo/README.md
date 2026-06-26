@@ -79,3 +79,12 @@ Code can't post to Discord directly). To demo end-to-end on Discord:
 
 The cron job deliberately does **not** fall back to the mock provider and never
 passes `--complete-payment`, so a scheduled run can never fake a success or charge.
+
+**Self-contained alternative (no OpenClaw agent):** set a Discord webhook in the
+environment and add `--notify` — `run.py` posts the severity-calibrated summary
+to Discord itself (AUTO/CONFIRM/BLOCK/stopped-before-pay):
+
+```bash
+export DFO_DISCORD_WEBHOOK="https://discord.com/api/webhooks/…"   # secret — never commit
+python3 run.py --provider doordash --claim-slot --notify
+```

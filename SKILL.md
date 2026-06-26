@@ -98,6 +98,11 @@ when actionable.
                 "to": "channel:<your-discord-channel-id>",
                 "message": "🍱 Ordered Vegetarian Pad Thai from Thai Spice — $14 (auto, within budget)." }
 
+**Self-contained alternative:** `python3 run.py … --notify` posts the same
+severity-calibrated summary straight to the Discord webhook in
+`$DFO_DISCORD_WEBHOOK` (no agent needed — handy for cron/headless). The webhook
+is a secret: keep it in the environment, never in the repo.
+
 Calibrate by severity: P0 (safety) is loud and explicit; P1 (money/wrong order)
 is clear; P2 (info) is calm. For DoorDash, say plainly that the order was
 **carted and stopped before payment** — no charge was made.
