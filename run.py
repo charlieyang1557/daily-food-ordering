@@ -457,11 +457,26 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="treat a CONFIRM decision as user-approved and place it (BLOCK never places)",
     )
     parser.add_argument(
+        "--notify",
+        action="store_true",
+        help="post a one-line summary to the Discord webhook in $DFO_DISCORD_WEBHOOK",
+    )
+    parser.add_argument(
         "--complete-payment",
         action="store_true",
         help="DANGER: authorize a real charge. Off by default; the adapter still hard-stops.",
     )
     return parser.parse_args(argv)
+
+
+def _post_notify(message: str) -> None:
+    from notify import notify_discord, WEBHOOK_ENV
+
+    if not os.environ.get(WEBHOOK_ENV):
+        print(f"(--notify: {WEBHOOK_ENV} not set; skipping Discord post)", file=sys.stderr)
+        return
+    ok = notify_discord(message)
+    print(f"(--notify: {'posted to Discord' if ok else 'Discord post failed'})", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -487,9 +502,16 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     except ProviderError as error:
         print(json.dumps({"error": "provider_unavailable", "detail": str(error)}, indent=2))
+        if args.notify:
+            _post_notify("⚠️ Daily Food Ordering — DoorDash unavailable (bot wall / login). "
+                         "Re-run `--login`. Nothing ordered.")
         return 3
 
     print(json.dumps(result.to_dict(), indent=2))
+    if args.notify:
+        from notify import format_notification
+
+        _post_notify(format_notification(result.to_dict()))
     return 0
 
 

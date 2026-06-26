@@ -6,3 +6,6 @@ venv/
 # Local browser profile + screenshots created by the DoorDash adapter at runtime
 .daily-food-ordering/
 *.png
+# Never commit secrets (e.g. DFO_DISCORD_WEBHOOK kept in a local env file)
+.env
+*.env
