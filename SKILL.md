@@ -95,7 +95,7 @@ Send one severity-calibrated Discord message. Never fully silent; interrupt only
 when actionable.
 
     message → { "action": "send", "channel": "discord",
-                "to": "channel:1481943668066615437",
+                "to": "channel:<your-discord-channel-id>",
                 "message": "🍱 Ordered Vegetarian Pad Thai from Thai Spice — $14 (auto, within budget)." }
 
 Calibrate by severity: P0 (safety) is loud and explicit; P1 (money/wrong order)

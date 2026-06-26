@@ -101,13 +101,11 @@ SELECTORS: dict[str, tuple[str, ...]] = {
     ),
     "order_total": (
         "[data-testid='OrderCartItemSubtotal']",
-        "[data-anchor-id='PlaceOrderButton']",
     ),
 }
 
 _DOLLAR_RE = re.compile(r"\$\s*(\d[\d,]*(?:\.\d+)?)")
 _PRICE_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)")
-_STORE_SLUG_RE = re.compile(r"/store/([^/?]+)")
 _FREE_TOKENS = {"free", "free item", "$0", "$0.00"}
 
 
@@ -281,7 +279,9 @@ class DoorDashProvider:
                 "doordash bot wall (Cloudflare). Run `--login` to warm the profile first."
             )
         logged_in = self._first_locator(page, "logged_in_marker") is not None
-        signed_out = self._first_locator(page, "signed_out_cta") is not None or "sign in" in body.lower()
+        # Only the explicit sign-in CTA selectors — NOT a body substring scan,
+        # which false-positives on logged-in footer/help text containing "sign in".
+        signed_out = self._first_locator(page, "signed_out_cta") is not None
         if not logged_in or signed_out:
             raise ProviderUnavailable(
                 "could not confirm a logged-in DoorDash session. Run `--login` to "
@@ -366,10 +366,10 @@ class DoorDashProvider:
                 context.close()
         return out
 
-    def discover(self, config: UserConfig) -> list[Candidate]:
+    def discover(self, config: UserConfig, *, query: str | None = None) -> list[Candidate]:
         from playwright.sync_api import sync_playwright
 
-        query = self.search_query or _default_query(config)
+        query = query or self.search_query or _default_query(config)
         with sync_playwright() as p:
             context = self._launch(p)
             page = self._new_page(context)
@@ -411,12 +411,7 @@ class DoorDashProvider:
         # gated by the engine (honest — we can't verify safety on DoorDash).
         if not config.fallback.restaurant:
             return []
-        original = self.search_query
-        self.search_query = config.fallback.restaurant
-        try:
-            return self.discover(config)
-        finally:
-            self.search_query = original
+        return self.discover(config, query=config.fallback.restaurant)
 
     def place_order(
         self,
@@ -425,6 +420,7 @@ class DoorDashProvider:
         idempotency_key: str,
         complete_payment: bool = False,
         budget_ceiling_usd: float | None = None,
+        auto_approve_ceiling_usd: float | None = None,
     ) -> OrderResult:
         from playwright.sync_api import sync_playwright
 
@@ -444,6 +440,10 @@ class DoorDashProvider:
                 added_name, added_price = self._add_item_to_cart(page, candidate)
                 carted = candidate
                 if added_name.strip().lower() != candidate.item_name.strip().lower():
+                    # A different item was carted — its safety is NOT the approved
+                    # item's, so mark it unverified, and re-apply the AUTO band to
+                    # its own price (a pricier substitute the engine never AUTO'd
+                    # must not be auto-placed).
                     carted = Candidate(
                         restaurant=candidate.restaurant,
                         item_name=added_name,
@@ -451,9 +451,20 @@ class DoorDashProvider:
                         cuisine=candidate.cuisine,
                         dietary=candidate.dietary,
                         allergens=candidate.allergens,
-                        verified_safe=candidate.verified_safe,
+                        verified_safe=False,
                         metadata=candidate.metadata,
                     )
+                    if auto_approve_ceiling_usd is not None and added_price > auto_approve_ceiling_usd:
+                        return OrderResult(
+                            status=OrderStatus.BLOCKED, provider=self.name,
+                            restaurant=carted.restaurant, item_name=carted.item_name,
+                            price_usd=added_price, idempotency_key=idempotency_key,
+                            reason=f"substitute_above_auto_approve:{added_price}>{auto_approve_ceiling_usd}",
+                            charged=False,
+                            summary={"substituted_for": candidate.item_name,
+                                     "carted_price_usd": added_price,
+                                     "auto_approve_ceiling_usd": auto_approve_ceiling_usd},
+                        )
 
                 self._go_to_checkout(page)
 
@@ -766,17 +777,6 @@ class DoorDashProvider:
             return str(path)
         except Exception:  # noqa: BLE001
             return None
-
-
-def _restaurant_from_href(href: str | None) -> str:
-    if not href:
-        return "DoorDash"
-    match = _STORE_SLUG_RE.search(href)
-    if not match:
-        return "DoorDash"
-    slug = re.sub(r"-\d+$", "", match.group(1))
-    words = [w for w in slug.split("-") if w and not w.isdigit()]
-    return " ".join(w.capitalize() for w in words) or "DoorDash"
 
 
 def _default_query(config: UserConfig) -> str:

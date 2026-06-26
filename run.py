@@ -87,6 +87,7 @@ def run(
     *,
     provider: Provider | None = None,
     complete_payment: bool = False,
+    confirmed: bool = False,
     claim_slot: bool = False,
     slot_dir: str | Path | None = None,
 ) -> RunResult:
@@ -100,14 +101,18 @@ def run(
     idempotency_key = _slot_key()
     steps: list[StepRecord] = []
 
-    # Step 1 — claim today's slot. With claim_slot, this is a DURABLE atomic
-    # marker so a retry / a second cron fire / a manual run the same day cannot
-    # double-order. If already claimed, no-op and exit.
+    # Load + validate config FIRST, so a bad config never consumes the day's slot.
+    config = load_config(config_path)
+
+    # Step 1 — claim today's slot. The marker is held for the whole run and
+    # RELEASED at the end unless an order is actually placed, so a transient
+    # failure or a pending CONFIRM doesn't burn the day. If already claimed by a
+    # concurrent/earlier run, no-op and exit.
     if claim_slot:
         if not _try_claim_slot(slots, idempotency_key):
             steps.append(_step(1, "claim_slot", StepStatus.SKIPPED, f"already claimed: {idempotency_key}"))
             return RunResult(
-                config=load_config(config_path),
+                config=config,
                 idempotency_key=idempotency_key,
                 candidates=[],
                 selected_candidate=None,
@@ -121,7 +126,6 @@ def run(
     else:
         steps.append(_step(1, "claim_slot", StepStatus.OK, idempotency_key))
 
-    config = load_config(config_path)
     steps.append(_step(2, "load_validate_config", StepStatus.OK, "config loaded"))
 
     # Step 3 — discovery. Any provider failure (bot wall, login, timeout, selector
@@ -129,12 +133,12 @@ def run(
     try:
         candidates = provider.discover(config)
     except ProviderError:
-        if claim_slot:
-            _record_slot_outcome(slots, idempotency_key, "provider_unavailable")
+        if claim_slot:  # retryable — release the slot so a later run can retry
+            _release_slot(slots, idempotency_key)
         raise
     except Exception as error:  # noqa: BLE001
         if claim_slot:
-            _record_slot_outcome(slots, idempotency_key, "discover_error")
+            _release_slot(slots, idempotency_key)
         raise ProviderUnavailable(
             f"discover failed: {type(error).__name__}: {error}"
         ) from error
@@ -142,12 +146,12 @@ def run(
         _step(3, "discover_candidates", StepStatus.OK, f"{len(candidates)} via {provider.name}")
     )
 
-    safe_candidates = _filter_safe(candidates)
+    available_candidates = _filter_available(candidates)
     steps.append(
-        _step(4, "filter_hard_restrictions", StepStatus.OK, f"{len(safe_candidates)} available")
+        _step(4, "filter_available", StepStatus.OK, f"{len(available_candidates)} available")
     )
 
-    ranked_candidates = _rank_candidates(safe_candidates, config)
+    ranked_candidates = _rank_candidates(available_candidates, config)
     steps.append(_step(5, "rank_preferences", StepStatus.OK, "ranked"))
 
     selected_candidate = _select_candidate(ranked_candidates, config)
@@ -173,17 +177,22 @@ def run(
     resolved = _resolve_decision(decision)
     steps.append(_step(8, "resolve_decision", resolved, decision.status.value))
 
-    # Step 9 — placement happens ONLY on AUTO. The real provider stops before pay
-    # and re-checks the real checkout total against daily_max (fail closed).
+    # Step 9 — placement happens on AUTO, or on a CONFIRM the user has explicitly
+    # approved (--confirmed). BLOCK never places. The real provider stops before
+    # pay, bounds a substitute to the AUTO band, and reconciles the real total.
     order_result: OrderResult | None = None
     placed = False
-    if decision.status is DecisionStatus.AUTO and selected_candidate is not None:
+    place_authorized = decision.status is DecisionStatus.AUTO or (
+        confirmed and decision.status is DecisionStatus.CONFIRM
+    )
+    if place_authorized and selected_candidate is not None:
         try:
             order_result = provider.place_order(
                 selected_candidate,
                 idempotency_key=idempotency_key,
                 complete_payment=complete_payment,
                 budget_ceiling_usd=config.budget.daily_max_usd,
+                auto_approve_ceiling_usd=config.budget.auto_approve_under_usd,
             )
             placed = order_result.status in (
                 OrderStatus.PLACED,
@@ -210,8 +219,12 @@ def run(
     steps.append(_step(11, "record_notify", StepStatus.OK, "recorded"))
 
     if claim_slot:
-        outcome = order_result.status.value if order_result else decision.status.value
-        _record_slot_outcome(slots, idempotency_key, outcome)
+        # Consume the slot ONLY if an order was actually placed (so retries and
+        # pending CONFIRMs aren't blocked); otherwise release it.
+        if placed:
+            _record_slot_outcome(slots, idempotency_key, order_result.status.value if order_result else "placed")
+        else:
+            _release_slot(slots, idempotency_key)
 
     return RunResult(
         config=config,
@@ -258,6 +271,15 @@ def _record_slot_outcome(slot_dir: Path, key: str, outcome: str) -> None:
             json.dumps({"key": key, "state": "done", "outcome": outcome, "recorded_at": _now_iso()}),
             encoding="utf-8",
         )
+        path.chmod(0o600)  # write_text drops the tight mode set by the atomic claim
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _release_slot(slot_dir: Path, key: str) -> None:
+    # Free a claimed-but-not-placed slot so a retry / an approved CONFIRM can run.
+    try:
+        (slot_dir / f"{key}.json").unlink(missing_ok=True)
     except Exception:  # noqa: BLE001
         pass
 
@@ -268,8 +290,10 @@ def _now_iso() -> str:
 
 # ---- pipeline helpers ---------------------------------------------------------
 
-def _filter_safe(candidates: list[Candidate]) -> list[Candidate]:
-    # Drop sold-out options before ranking; the engine re-checks safety + budget.
+def _filter_available(candidates: list[Candidate]) -> list[Candidate]:
+    # Drop sold-out options before ranking. This does NOT enforce allergen/dietary
+    # safety — that is decide()'s job (the authoritative gate). Named for what it
+    # actually does, so no one assumes safety filtering happens here.
     return [candidate for candidate in candidates if candidate.available]
 
 
@@ -296,7 +320,7 @@ def _try_fallback(provider: Provider, config: UserConfig) -> Candidate | None:
         candidates = discover_fallback(config)
     except ProviderError:
         return None
-    ranked = _rank_candidates(_filter_safe(candidates), config)
+    ranked = _rank_candidates(_filter_available(candidates), config)
     return _select_candidate(ranked, config)
 
 
@@ -390,6 +414,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="durable per-day idempotency: skip if today's slot was already claimed",
     )
     parser.add_argument(
+        "--confirmed",
+        action="store_true",
+        help="treat a CONFIRM decision as user-approved and place it (BLOCK never places)",
+    )
+    parser.add_argument(
         "--complete-payment",
         action="store_true",
         help="DANGER: authorize a real charge. Off by default; the adapter still hard-stops.",
@@ -412,6 +441,7 @@ def main(argv: list[str] | None = None) -> int:
             args.config,
             provider=provider,
             complete_payment=args.complete_payment,
+            confirmed=args.confirmed,
             claim_slot=args.claim_slot,
         )
     except ConfigError as error:

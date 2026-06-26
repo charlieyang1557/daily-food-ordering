@@ -71,7 +71,7 @@ Code can't post to Discord directly). To demo end-to-end on Discord:
    `daily-food-ordering` job in `~/.openclaw/cron/jobs.json`, **or** trigger the
    skill manually from OpenClaw.
 3. OpenClaw runs `python3 run.py --provider doordash --claim-slot …`, then posts a
-   severity-calibrated summary to Discord channel `1481943668066615437` via the
+   severity-calibrated summary to Discord channel `<your-discord-channel-id>` via the
    `message` tool — saying plainly that the order was **carted and stopped before
    payment, no charge made**.
 

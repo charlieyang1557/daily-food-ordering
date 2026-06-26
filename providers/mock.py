@@ -105,6 +105,7 @@ class MockProvider:
         idempotency_key: str,
         complete_payment: bool = False,
         budget_ceiling_usd: float | None = None,
+        auto_approve_ceiling_usd: float | None = None,
     ) -> OrderResult:
         # The mock simulates a confirmed order. It never touches a real account,
         # so `charged` stays False even if a caller passes complete_payment.

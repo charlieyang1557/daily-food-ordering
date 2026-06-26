@@ -104,11 +104,15 @@ class Provider(Protocol):
         idempotency_key: str,
         complete_payment: bool = False,
         budget_ceiling_usd: float | None = None,
+        auto_approve_ceiling_usd: float | None = None,
     ) -> OrderResult:
         """Carry out an already-approved placement, stopping before payment.
 
         budget_ceiling_usd, when given, is re-checked against the real checkout
         total before success is reported (fail closed if over / unverifiable).
+        auto_approve_ceiling_usd, when given, bounds a *substituted* item's price
+        to the same AUTO band the engine approved (a pricier substitute is not
+        auto-placed; it would need a CONFIRM the engine never granted).
         """
         ...
 
