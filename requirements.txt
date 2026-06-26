@@ -1,0 +1,8 @@
+# Runtime — pinned for reproducibility / supply-chain safety (these run inside a
+# browser session that holds the user's live DoorDash cookies).
+pyyaml==6.0.3        # config parsing (engine/config.py)
+playwright==1.58.0   # real DoorDash adapter (providers/doordash.py)
+                     # after install, run once: python -m playwright install chromium
+# Dev / tests
+pytest>=7.0,<10
+# Windows users also need: pip install tzdata   (IANA timezone validation)

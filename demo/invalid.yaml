@@ -1,0 +1,10 @@
+# DEMO — an intentionally broken config to show fail-loud validation.
+# 'tuna' is not an FDA Big-9 allergen, so the loader rejects it (exit code 2,
+# {"error":"config_invalid", ...}) and places nothing. Swap in other mistakes to
+# show the other guards: auto_approve_under > daily_max, a bad timezone, or an
+# ingredient ('cilantro') in never_order.
+budget:
+  daily_max_usd: 25
+  auto_approve_under_usd: 18
+restrictions:
+  allergies: [tuna]        # not a recognized allergen -> fail loud
