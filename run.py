@@ -158,6 +158,10 @@ def run(
     selection_detail = selected_candidate.item_name if selected_candidate else "none"
     steps.append(_step(6, "select_price", StepStatus.OK, selection_detail))
 
+    # KNOWN LIMITATION: rolling_cap_usd is not enforced here. decide() supports a
+    # rolling_total_usd argument, but there is no persisted spend ledger yet, so
+    # the default 0 is passed and the cap never fires. Enforcing it needs a
+    # durable spend ledger (see README "What I'd build next").
     decision = decide(selected_candidate, config)
     # Fallback (SKILL Step 8): on any BLOCK, try the pre-vetted fallback. If it
     # re-checks safe + within budget, it becomes a fallback-in-use CONFIRM.
@@ -194,10 +198,11 @@ def run(
                 budget_ceiling_usd=config.budget.daily_max_usd,
                 auto_approve_ceiling_usd=config.budget.auto_approve_under_usd,
             )
-            placed = order_result.status in (
-                OrderStatus.PLACED,
-                OrderStatus.STOPPED_BEFORE_PAYMENT,
-            )
+            # STOPPED_BEFORE_PAYMENT is "carted, not paid" — NOT a placed order:
+            # it neither sets `placed` nor consumes the daily slot. Only a real
+            # PLACED counts. (This build never charges, so the real DoorDash path
+            # never consumes a slot — honestly, no order means the day stays open.)
+            placed = order_result.status is OrderStatus.PLACED
         except Exception as error:  # noqa: BLE001
             # Any placement failure (provider error OR an unexpected browser
             # exception) is recorded, never crashes, never blind-retries, never
@@ -211,7 +216,10 @@ def run(
                 idempotency_key=idempotency_key,
                 reason=f"{type(error).__name__}: {error}",
             )
-    place_status = StepStatus.OK if placed else StepStatus.SKIPPED
+    reached_gate = order_result is not None and order_result.status in (
+        OrderStatus.PLACED, OrderStatus.STOPPED_BEFORE_PAYMENT
+    )
+    place_status = StepStatus.OK if reached_gate else StepStatus.SKIPPED
     place_detail = order_result.status.value if order_result else "not placed"
     steps.append(_step(9, "place_order", place_status, place_detail))
 
@@ -248,20 +256,50 @@ def _default_slot_dir() -> Path:
     return Path.home() / ".daily-food-ordering" / "slots"
 
 
+_CLAIM_STALE_SECONDS = 900  # 15 min — longer than the cron payload timeout
+
+
 def _try_claim_slot(slot_dir: Path, key: str) -> bool:
-    """Atomically claim today's slot. Returns False if already claimed."""
+    """Atomically claim today's slot.
+
+    Returns False only when the day is genuinely taken: a terminal `done` marker,
+    or a *recent* in-progress `claimed` marker (another run is live). A STALE
+    `claimed` marker (a crashed run that never released) is reclaimed, so a crash
+    can't permanently block the day.
+    """
     slot_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     path = slot_dir / f"{key}.json"
+    marker = {"key": key, "state": "claimed", "claimed_at": _now_iso()}
     try:
         fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError:
-        return False
+        try:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            existing = {}
+        if existing.get("state") == "done":
+            return False  # an order was already placed today
+        if not _claim_is_stale(existing.get("claimed_at")):
+            return False  # another run is genuinely in progress
+        try:  # stale crash — reclaim
+            path.write_text(json.dumps(marker), encoding="utf-8")
+            path.chmod(0o600)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
     with os.fdopen(fd, "w") as handle:
-        json.dump(
-            {"key": key, "state": "claimed", "claimed_at": _now_iso()},
-            handle,
-        )
+        json.dump(marker, handle)
     return True
+
+
+def _claim_is_stale(claimed_at: str | None) -> bool:
+    if not claimed_at:
+        return True
+    try:
+        claimed = datetime.fromisoformat(claimed_at)
+    except Exception:  # noqa: BLE001
+        return True
+    return (datetime.now(timezone.utc) - claimed).total_seconds() > _CLAIM_STALE_SECONDS
 
 
 def _record_slot_outcome(slot_dir: Path, key: str, outcome: str) -> None:

@@ -47,7 +47,9 @@ pay gate it returns `FAILED` (never a fake success).
 
 Verified live result:
 ```
-STATUS: STOPPED_BEFORE_PAYMENT | placed: true | charged: false
+STATUS: STOPPED_BEFORE_PAYMENT | placed: false (carted, NOT paid) | charged: false
+# placed=false is honest: stopping before pay is not a placed order, so a
+# scheduled --claim-slot run does NOT burn the day on a stop-before-pay.
 carted: <dish>  | checkout_total_usd: <real total> | screenshot: ~/.daily-food-ordering/screenshots/<key>.png
 ```
 

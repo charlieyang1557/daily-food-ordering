@@ -1,12 +1,15 @@
 """Review-fix tests: the --confirmed CONFIRM placement path, and slot release on
 non-placement (retryable failures and pending CONFIRMs must not burn the day).
 """
+import json
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
-from engine.models import DecisionStatus
-from providers.base import OrderStatus, ProviderUnavailable
+from engine.models import Candidate, DecisionStatus
+from providers.base import OrderResult, OrderStatus, ProviderUnavailable
 from providers.mock import MockProvider
-from run import run
+from run import run, _try_claim_slot, _CLAIM_STALE_SECONDS
 
 
 def _confirm_cfg(tmp_path):
@@ -77,3 +80,50 @@ def test_placed_order_does_consume_the_slot(tmp_path):
     second = run(cfg, provider=MockProvider("happy"), claim_slot=True, slot_dir=slots)
     assert second.already_ran is True
     assert second.placed is False
+
+
+class _StopProvider:
+    name = "stop"
+
+    def discover(self, config):
+        return [Candidate("Real Store", "Real Dish", 12, verified_safe=True)]
+
+    def place_order(self, candidate, *, idempotency_key, complete_payment=False,
+                    budget_ceiling_usd=None, auto_approve_ceiling_usd=None):
+        return OrderResult(
+            status=OrderStatus.STOPPED_BEFORE_PAYMENT, provider="stop",
+            restaurant=candidate.restaurant, item_name=candidate.item_name,
+            price_usd=candidate.price_usd, idempotency_key=idempotency_key,
+            reason="reached_checkout", charged=False,
+        )
+
+
+def test_stopped_before_payment_is_not_placed_and_frees_slot(tmp_path):
+    cfg = tmp_path / "a.yaml"
+    cfg.write_text("budget:\n  daily_max_usd: 25\n  auto_approve_under_usd: 18\n", encoding="utf-8")
+    slots = tmp_path / "slots"
+    result = run(cfg, provider=_StopProvider(), claim_slot=True, slot_dir=slots)
+    assert result.decision.status is DecisionStatus.AUTO
+    assert result.order_result.status is OrderStatus.STOPPED_BEFORE_PAYMENT
+    assert result.placed is False                    # carted, not paid -> not placed
+    assert list(slots.glob("*.json")) == []          # slot freed; the day stays open
+    retry = run(cfg, provider=_StopProvider(), claim_slot=True, slot_dir=slots)
+    assert retry.already_ran is False
+
+
+def test_slot_claim_skips_done_and_recent_but_reclaims_stale(tmp_path):
+    slots = tmp_path / "slots"
+    slots.mkdir(mode=0o700)
+    key = "daily-food-ordering-test"
+    path = slots / f"{key}.json"
+
+    path.write_text(json.dumps({"key": key, "state": "done"}), encoding="utf-8")
+    assert _try_claim_slot(slots, key) is False          # an order was placed today
+
+    path.write_text(json.dumps({"key": key, "state": "claimed",
+                                "claimed_at": datetime.now(timezone.utc).isoformat()}), encoding="utf-8")
+    assert _try_claim_slot(slots, key) is False          # a run is genuinely in progress
+
+    stale = (datetime.now(timezone.utc) - timedelta(seconds=_CLAIM_STALE_SECONDS + 60)).isoformat()
+    path.write_text(json.dumps({"key": key, "state": "claimed", "claimed_at": stale}), encoding="utf-8")
+    assert _try_claim_slot(slots, key) is True           # crashed run -> reclaimed

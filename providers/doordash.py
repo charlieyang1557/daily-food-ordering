@@ -482,6 +482,18 @@ class DoorDashProvider:
                     summary["substitution_reason"] = "approved item required customization"
                 screenshot_path = self._screenshot(page, idempotency_key)
 
+                # Fail closed: STOPPED_BEFORE_PAYMENT must mean the carted item is
+                # actually on the checkout page. If we can't confirm it, don't
+                # claim success — never fake a stop-before-pay.
+                if not cart_verified:
+                    return OrderResult(
+                        status=OrderStatus.FAILED, provider=self.name,
+                        restaurant=carted.restaurant, item_name=carted.item_name,
+                        price_usd=carted.price_usd, idempotency_key=idempotency_key,
+                        reason="cart_unverified: carted item not confirmed at checkout",
+                        charged=False, summary=summary, screenshot_path=screenshot_path,
+                    )
+
                 failed = self._reconcile_budget(
                     carted, idempotency_key=idempotency_key, total=total,
                     ceiling=budget_ceiling_usd, summary=summary, screenshot_path=screenshot_path,

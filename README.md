@@ -124,9 +124,13 @@ the actual charge is not implemented in this build.
 - Parse the full checkout breakdown (line items, fees, tax, tip) into
   `OrderResult.summary`. *(The total is already reconciled against `daily_max`,
   failing closed if missing or over — see `_reconcile_budget`.)*
-- A persisted ledger for rolling-cap, learning, and graduated autonomy. *(Per-day
-  idempotency is now durable — `--claim-slot` writes an atomic marker under
-  `~/.daily-food-ordering/slots/`.)*
+- A **persisted spend ledger** so `rolling_cap_usd` is actually enforced. Today
+  it is **not**: `decide()` accepts a rolling total, but `run()` has no spend
+  history to pass, so it sends `0` and the cap never fires. Enforcing it needs a
+  durable ledger of placed-order spend summed over the rolling window. *(Per-day
+  idempotency, by contrast, **is** durable — `--claim-slot` writes a state-aware
+  atomic marker under `~/.daily-food-ordering/slots/` and only a placed order
+  consumes the day.)*
 - Distinguish "sold out → P2" from "no safe option → P0" at the run level (today
   an all-unavailable set collapses to `no_candidate` after filtering).
 - A second provider (UberEats/Yelp) behind the same interface to prove
