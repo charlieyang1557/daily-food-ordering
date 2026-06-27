@@ -39,9 +39,9 @@ python3 run.py --provider doordash --login   # headed: pass the human check, sig
 python3 run.py --provider doordash --query thai --config demo/charlie-unrestricted.yaml
 ```
 
-In **one** browser session, the adapter retrieves a real menu, **searches the
-store for the engine's chosen dish**, adds it (auto-completing *every* required
-customization group — protein, spice, etc.), goes straight to the real checkout
+In **one** browser session, the adapter retrieves a real menu, **scrolls and
+scans it for the engine's chosen dish** (matched by name), adds it (auto-completing
+*every* required customization group — protein, spice, etc.), goes straight to the real checkout
 in-session, and **hard-stops at the "Place Order" button** — returning
 `STOPPED_BEFORE_PAYMENT` with the real total + a screenshot. It never clicks pay.
 If it can't reach the pay gate it returns `FAILED` (never a fake success).
@@ -55,13 +55,15 @@ carted: <dish>  | checkout_total_usd: <real total> | screenshot: ~/.daily-food-o
 ```
 
 Notes:
-- **Start with an empty DoorDash cart** for an accurate total — the adapter adds
-  one item; it does not clear pre-existing cart items, so leftovers inflate the
-  total (still reconciled against `daily_max`, failing closed if over).
-- The adapter finds the approved dish via the store **search box** and
-  auto-completes its required customization (any number of "select 1" groups).
-  Only if it genuinely can't add that dish does it **substitute the cheapest
-  item it can add**, reporting `summary.substituted_for` — honest either way.
+- The adapter **clears any leftover cart items first** (it orders one daily meal),
+  so the checkout total reflects only today's item and cart verification can't
+  trip on a stale leftover (e.g. a drink from a prior run). The number removed is
+  reported in `summary.cleared_cart_items`. (The total is still reconciled against
+  `daily_max`, failing closed if over.)
+- The adapter finds the approved dish by **scrolling and scanning the menu**
+  (matched by name) and auto-completes its required customization (any number of
+  "select 1" groups). Only if it genuinely can't add that dish does it
+  **substitute the cheapest item it can add**, reporting `summary.substituted_for`.
 - Use the *unrestricted* config — with restrictions, real DoorDash items are
   `verified_safe=false` and the engine correctly BLOCKs them (safety-first).
 

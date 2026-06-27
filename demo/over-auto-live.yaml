@@ -1,0 +1,9 @@
+# Live DoorDash demo — "needs confirmation" CONFIRM (browser opens, real discovery).
+# A real ~$18 dish is within the $50 ceiling but above the $5 auto-approve, so the
+# engine asks first (CONFIRM above_auto_approve) instead of ordering. Unrestricted
+# so the only gate is the auto-approve band. cuisines drives the store search.
+budget:
+  daily_max_usd: 50
+  auto_approve_under_usd: 5
+preferences:
+  cuisines: [Thai]

@@ -111,6 +111,10 @@ _DOLLAR_RE = re.compile(r"\$\s*(\d[\d,]*(?:\.\d+)?)")
 _PRICE_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)")
 _FREE_TOKENS = {"free", "free item", "$0", "$0.00"}
 
+# When the approved dish genuinely can't be added, a substitute must still be a
+# MEAL — never a soda/side. Items priced below this floor are skipped as substitutes.
+_SUBSTITUTE_PRICE_FLOOR_USD = 8.0
+
 
 class DoorDashProvider:
     name = "doordash"
@@ -466,6 +470,17 @@ class DoorDashProvider:
             page.goto(store_url, wait_until="domcontentloaded")
             self._guard_page(page)
 
+        # Start clean: empty any leftover cart items FIRST, so the checkout
+        # total reflects only today's single meal and cart verification can't
+        # trip on a stale item (e.g. a drink left from a prior run). Recorded
+        # in the summary for honesty.
+        cleared_items = self._clear_cart(page)
+        # Clearing navigates into the cart view, which drops the store-menu DOM;
+        # reload the store so the menu is present (and clean) for the add.
+        if cleared_items:
+            page.goto(store_url, wait_until="domcontentloaded")
+            page.wait_for_timeout(2000)
+
         # Cart the approved item, or the cheapest item that adds without
         # required customization. Report what was ACTUALLY carted.
         added_name, added_price = self._add_item_to_cart(page, candidate)
@@ -508,6 +523,7 @@ class DoorDashProvider:
         total = self._parse_checkout_total(page)
         summary = self._read_order_summary(page, carted, total)
         summary["cart_verified"] = cart_verified
+        summary["cleared_cart_items"] = cleared_items
         if carted is not candidate:
             summary["substituted_for"] = candidate.item_name
             summary["substitution_reason"] = "approved item required customization"
@@ -626,54 +642,110 @@ class DoorDashProvider:
             waited += 500
         return self._cart_count(page) > before
 
+    def _clear_cart(self, page: Any) -> int:
+        """Empty the cart so the run starts clean. Returns the number of removals.
+
+        The skill orders ONE daily meal, so a leftover item would inflate the
+        checkout total and can fail cart verification (a stale drink reads as an
+        unverified item). The remove control is the cart drawer's
+        stepper-decrement button (aria-label 'remove ... from cart').
+        """
+        if self._cart_count(page) <= 0:
+            return 0
+        cart = self._first_locator(page, "cart_button")
+        if cart is None:
+            return 0
+        self._click_resilient(cart)
+        page.wait_for_timeout(1500)
+        removed = 0
+        for _ in range(25):  # bounded: never loop forever on a stuck control
+            button = page.locator(
+                "[data-testid='stepper-decrement-button'], button[aria-label*='emove' i]"
+            ).first
+            if button.count() == 0:
+                break
+            try:
+                button.click(timeout=4000)
+            except Exception:  # noqa: BLE001
+                try:
+                    button.click(force=True)
+                except Exception:  # noqa: BLE001
+                    break
+            removed += 1
+            page.wait_for_timeout(1200)
+        # Close the cart drawer so the menu is interactable again for the add.
+        self._close_modal(page)
+        page.wait_for_timeout(500)
+        return removed
+
     def _add_item_to_cart(self, page: Any, candidate: Candidate) -> tuple[str, float]:
-        """Cart the engine-approved dish; failing that, the cheapest item that
-        adds cleanly. Returns the (name, price) ACTUALLY carted, or raises.
+        """Find the engine-approved dish by progressively scrolling the menu and
+        matching by NAME, then add it (completing any required customization).
+
+        The menu lazy-loads / reorders between loads, so we scroll incrementally
+        and scan the newly-loaded items each pass — adding the approved dish the
+        moment it appears, rather than hoping it sits in some fixed first-N
+        window. Honest clicking + scrolling; no fake search box. If the approved
+        dish genuinely can't be added, fall back to the cheapest MEAL-priced item
+        that adds cleanly — a price floor so we never substitute a soda/side for
+        a meal (which read as an unverified item and failed cart verification).
         """
         try:
             page.wait_for_selector("[data-anchor-id='MenuItem']", timeout=12000)
         except Exception:  # noqa: BLE001
             pass
 
-        # 1) Smooth + reliable: filter the menu to the approved dish via the
-        #    in-store search box and add THAT — so we cart the user's actual
-        #    choice rather than substituting just because the full-menu DOM order
-        #    differs from discovery (DoorDash reorders/lazy-loads between loads).
-        found = self._search_and_add_named(page, candidate)
-        if found is not None:
-            return found
+        approved = candidate.item_name.strip().lower()
+        scanned = 0
+        last_count = -1
+        approved_unaddable = False
+        for _ in range(16):
+            items = page.locator("[data-anchor-id='MenuItem']")
+            count = items.count()
+            for i in range(scanned, count):  # only newly-loaded items each pass
+                try:
+                    text = items.nth(i).inner_text()
+                except Exception:  # noqa: BLE001
+                    continue
+                if self._menu_item_name(text).strip().lower() != approved:
+                    continue
+                price = self.parse_price(text)
+                if price is None:
+                    continue
+                quick = items.nth(i).locator("[data-testid='quick-add-button']").first
+                added = self._attempt_add(page, quick, candidate.item_name, price)
+                if added is not None:
+                    return added
+                approved_unaddable = True  # found it, but its modal wouldn't complete
+                break
+            scanned = count
+            if approved_unaddable or count == last_count:
+                break  # found-but-unaddable, or the menu is fully loaded
+            last_count = count
+            page.mouse.wheel(0, 1600)
+            page.wait_for_timeout(650)
 
-        # 2) Fall back to the full menu (cheapest item that adds cleanly). Clear
-        #    the search filter first so the whole menu is visible again.
-        self._clear_in_store_search(page)
-        for _ in range(3):
-            page.mouse.wheel(0, 1500)
-            page.wait_for_timeout(700)
-
+        # Fallback: cheapest MEAL-priced item that adds cleanly (never a drink).
         items = page.locator("[data-anchor-id='MenuItem']")
         parsed: list[tuple[int, str, float]] = []
-        for i in range(min(items.count(), 24)):
+        for i in range(min(items.count(), 60)):
             try:
                 text = items.nth(i).inner_text()
             except Exception:  # noqa: BLE001
                 continue
             price = self.parse_price(text)
-            if price is None:
+            if price is None or price < _SUBSTITUTE_PRICE_FLOOR_USD:
                 continue
             if items.nth(i).locator("[data-testid='quick-add-button']").count() == 0:
                 continue
             parsed.append((i, self._menu_item_name(text), price))
-
-        # Approved item first (if it surfaced here), then cheapest among the rest.
-        approved = candidate.item_name.strip().lower()
-        parsed.sort(key=lambda t: (0 if t[1].strip().lower() == approved else 1, t[2]))
-
+        parsed.sort(key=lambda t: t[2])
         for idx, name, price in parsed[:8]:
             quick = items.nth(idx).locator("[data-testid='quick-add-button']").first
             added = self._attempt_add(page, quick, name, price)
             if added is not None:
                 return added
-        raise ProviderUnavailable("could not add any item to the cart on this store")
+        raise ProviderUnavailable("could not add the selected dish or a suitable substitute")
 
     def _attempt_add(
         self, page: Any, quick: Any, name: str, price: float
@@ -703,60 +775,6 @@ class DoorDashProvider:
         ):
             return (name, price)
         self._close_modal(page)
-        return None
-
-    @staticmethod
-    def _core_dish_name(name: str) -> str:
-        # Strip a leading menu code ("A10 - ", "C9 - ", "33. ") so the in-store
-        # search matches on the dish words DoorDash actually indexes.
-        core = re.sub(r"^[A-Za-z]{0,3}\d+[A-Za-z]?[.\)]?\s*[-–]?\s*", "", name).strip()
-        return core or name
-
-    def _clear_in_store_search(self, page: Any) -> None:
-        box = page.locator("input[placeholder*='Search' i]").first
-        if box.count() == 0:
-            return
-        try:
-            box.fill("")
-            page.wait_for_timeout(1200)
-        except Exception:  # noqa: BLE001
-            pass
-
-    def _search_and_add_named(
-        self, page: Any, candidate: Candidate
-    ) -> tuple[str, float] | None:
-        """Type the dish into the in-store search box, then add the matching
-        item. Returns (name, price) carted, or None if search can't surface it.
-        """
-        box = page.locator("input[placeholder*='Search' i]").first
-        if box.count() == 0:
-            return None
-        core = self._core_dish_name(candidate.item_name)
-        try:
-            box.click()
-            box.fill(core)
-        except Exception:  # noqa: BLE001
-            return None
-        page.wait_for_timeout(2200)
-        items = page.locator("[data-anchor-id='MenuItem']")
-        approved = candidate.item_name.strip().lower()
-        core_l = core.lower()
-        for i in range(min(items.count(), 8)):
-            try:
-                text = items.nth(i).inner_text()
-            except Exception:  # noqa: BLE001
-                continue
-            name = self._menu_item_name(text)
-            price = self.parse_price(text)
-            if price is None:
-                continue
-            nl = name.strip().lower()
-            if nl != approved and core_l not in nl:
-                continue
-            quick = items.nth(i).locator("[data-testid='quick-add-button']").first
-            added = self._attempt_add(page, quick, name, price)
-            if added is not None:
-                return added
         return None
 
     def _complete_item_modal(self, page: Any) -> bool:

@@ -1,0 +1,9 @@
+# Live DoorDash demo — "over budget" BLOCK (browser opens, real discovery).
+# daily_max is intentionally tiny, so every real dish exceeds it: the engine
+# surfaces the cheapest candidate and BLOCKs over_daily_max. Unrestricted so the
+# block is purely about price (not safety). cuisines drives the store search.
+budget:
+  daily_max_usd: 5
+  auto_approve_under_usd: 5
+preferences:
+  cuisines: [Thai]

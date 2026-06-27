@@ -11,9 +11,10 @@ description: >
   spends beyond the user's limits, never acts outside granted authority, and
   never orders food that violates the user's dietary or allergy restrictions.
 
-  Provider is pluggable: a deterministic mock (default; for tests/dry-runs) or a
-  real DoorDash adapter (Playwright) that retrieves a real menu and drives a
-  real cart to checkout but HARD-STOPS before payment. Reads config from
+  For a real order it uses the DoorDash adapter (Playwright, headed): retrieves a
+  real menu, drives a real cart to checkout, and HARD-STOPS before payment (never
+  charges). The deterministic mock provider is for tests/dry-runs ONLY — never use
+  mock to fulfill a real "order my food" request. Reads config from
   user_preferences.yaml. Do NOT use it for anything but the user's own single
   daily meal (no team lunches / group orders).
 allowed-tools: ["exec", "message"]
@@ -40,7 +41,7 @@ Run everything from the skill directory:
 DoorDash sits behind a human-check wall and shows menus only to a logged-in
 session. Warm a persistent browser profile ONCE, by a human:
 
-    [code]  python3 run.py --provider doordash --login
+    [code]  /Users/openclaw/miniconda3/bin/python3 run.py --provider doordash --login
 
 A headed browser opens; the human passes the check, signs in, and sets a
 delivery address. The profile persists, so later runs reuse the session. Skip
@@ -60,8 +61,32 @@ config, asks the provider to discover candidates, applies the hard filters, runs
 the engine's single AUTO/CONFIRM/BLOCK decision, and on AUTO asks the provider to
 place the order (the real provider stops before pay).
 
-    [code]  python3 run.py --provider mock --config user_preferences.yaml
-    # real platform: python3 run.py --provider doordash --config user_preferences.yaml
+**Interpreter:** use the dep-complete Python — the bare `python3` on this machine
+(`/usr/bin/python3`) lacks `playwright`, so the DoorDash provider can't import
+there. Always invoke `/Users/openclaw/miniconda3/bin/python3`.
+
+**Trigger → command map.** Match the user's phrase to a row and run that command,
+prefixing each with the interpreter `/Users/openclaw/miniconda3/bin/python3` (the
+bare `python3` lacks `playwright`). Rows marked **🌐 LIVE** open the real DoorDash
+browser (real discovery, then the decision); the pure-safety rows that live can't
+reproduce — a *declared* allergen, a *verified-safe* fallback — use the
+deterministic **mock** provider. Each maps to a `references/failure-modes.md` (§)
+row; **Expected** is the engine's verified `(decision, reason, severity)`. Never
+use mock to fulfill a real order.
+
+| User says | Command (prefix with the interpreter) | Expected — engine output · `failure-modes.md` § |
+|-----------|----------------------------------------|----------|
+| `order my daily food` | `run.py --provider doordash --claim-slot --config demo/charlie-unrestricted.yaml` | **LIVE** — carts the chosen dish, **STOPS before pay**, no charge |
+| `order my daily food demo fail 1` | `run.py --provider doordash --query thai --config demo/over-budget-live.yaml` | 🌐 **LIVE BLOCK `over_daily_max`** (P1) — browses the real menu; every dish over the $5 cap · **§D** |
+| `order my daily food demo fail 2` | `run.py --provider doordash --query thai --config demo/over-auto-live.yaml` | 🌐 **LIVE CONFIRM `above_auto_approve`** (P1) — real ~$18 dish over the $5 auto-approve, asks first · **§D** |
+| `order my daily food demo fail 3` | `run.py --provider doordash --query thai --config demo/charlie-no-fallback.yaml` | 🌐 **LIVE BLOCK `unverified_safety`** (P0) — restricted user; DoorDash can't prove a dish is peanut-free · **§C** |
+| `order my daily food demo fail 4` | `run.py --provider mock --scenario allergen --config demo/charlie-no-fallback.yaml` | **BLOCK `allergy_violation`** (P0, mock) — refuses a *declared*-peanut dish (live can't declare allergens) · **§C** |
+| `order my daily food demo fail 5` | `run.py --provider mock --scenario allergen --config demo/charlie-trusted.yaml` | **CONFIRM `fallback_in_use`** (P1, mock) — rescued to the safe Chipotle fallback (live fallback is also unverifiable) · **§C** |
+| `order my daily food demo fail 6` | `run.py --config demo/invalid.yaml` | **exit 2 `config_invalid`** — fail-loud at config load, no browser by design · **§A** |
+
+(`user_preferences.yaml` holds the user's REAL prefs — peanut allergy, vegetarian.
+On live DoorDash those can't be verified safe, so it BLOCKs; use it in place of
+charlie-unrestricted only if the user explicitly asks for the "real prefs" run.)
 
 It prints JSON: `{decision:{decision,reason,severity}, placed, order_result, steps}`.
 Parse it. Do not recompute the decision.
