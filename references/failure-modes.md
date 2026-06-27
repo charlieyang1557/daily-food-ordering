@@ -94,12 +94,14 @@ the demo, the engine, and this taxonomy all agree.
 | fail 1 | 🌐 LIVE · doordash + `over-budget-live.yaml` (daily_max $5) | D | **BLOCK** `over_daily_max` (P1) |
 | fail 2 | 🌐 LIVE · doordash + `over-auto-live.yaml` (auto $5 / max $50) | D | **CONFIRM** `above_auto_approve` (P1) |
 | fail 3 | 🌐 LIVE · doordash + `charlie-no-fallback.yaml` (restricted) | C | **BLOCK** `unverified_safety` (P0) |
-| fail 4 | mock · `allergen` + no-fallback config | C | **BLOCK** `allergy_violation` (P0) |
+| fail 4 | 🌐 LIVE · doordash `--dish "pad thai"` at Thai Recipe (card declares peanuts) | C | **BLOCK** `allergy_violation` (P0) |
 | fail 5 | mock · `allergen` + trusted config (Chipotle fallback) | C | **CONFIRM** `fallback_in_use` (P1) |
 | fail 6 | config load · `demo/invalid.yaml` | A | exit 2 `config_invalid` |
 
-fail 1–3 run **live** on DoorDash (the browser opens, real discovery → decision);
-fail 4–5 use the **mock** provider because live DoorDash can't *declare* an
-allergen or offer a *verified-safe* fallback (every real item is `unverified_safety`);
+fail 1–4 run **live** on DoorDash (the browser opens, real discovery → decision).
+fail 4 targets a dish whose card *declares* an allergen (Pad Thai → peanuts) with
+`--dish`, so the engine emits a precise `allergy_violation` rather than the generic
+`unverified_safety`. Only fail 5 (fallback rescue) uses the **mock** provider —
+a *verified-safe* fallback can't come from a platform we never trust for safety.
 fail 6 fails at config load (no browser). `order my daily food` (no `fail N`) is the
 live run that carts a dish and stops before pay.

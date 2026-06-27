@@ -115,6 +115,16 @@ _FREE_TOKENS = {"free", "free item", "$0", "$0.00"}
 # MEAL — never a soda/side. Items priced below this floor are skipped as substitutes.
 _SUBSTITUTE_PRICE_FLOOR_USD = 8.0
 
+# Allergens DECLARED in a menu item's visible text (name + description). A
+# positive declaration is trusted ONLY in the safe direction — to REFUSE the item;
+# the platform still can't make an item "verified safe" (verified_safe stays
+# False). Keywords are precise to avoid false positives (no bare "egg" → eggplant).
+_ALLERGEN_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "peanuts": ("peanut",),
+    "tree nuts": ("almond", "cashew", "walnut", "pecan", "hazelnut", "pistachio", "macadamia"),
+    "shellfish": ("shrimp", "prawn", "crab", "lobster", "scallop", "shellfish", "oyster", "mussel"),
+}
+
 
 class DoorDashProvider:
     name = "doordash"
@@ -172,6 +182,13 @@ class DoorDashProvider:
             return 0.0
         match = _PRICE_RE.search(text)
         return float(match.group(1).replace(",", "")) if match else None
+
+    @staticmethod
+    def _parse_allergens(text: str) -> list[str]:
+        """Allergens DECLARED in a menu item's text. Trusted only to REFUSE (a
+        positive 'contains peanut' signal); never to mark an item safe."""
+        blob = (text or "").lower()
+        return [a for a, kws in _ALLERGEN_KEYWORDS.items() if any(k in blob for k in kws)]
 
     @staticmethod
     def _menu_item_name(text: str) -> str:
@@ -605,9 +622,9 @@ class DoorDashProvider:
                     item_name=name,
                     price_usd=price,
                     cuisine=None,
-                    dietary=[],          # DoorDash can't be trusted to confirm these...
-                    allergens=[],
-                    verified_safe=False,  # ...so candidates stay UNVERIFIED -> engine gates them.
+                    dietary=[],          # DoorDash can't be trusted to CONFIRM safe...
+                    allergens=self._parse_allergens(text),  # ...but a declared allergen is trusted to REFUSE.
+                    verified_safe=False,  # stays UNVERIFIED -> engine gates restricted users.
                     metadata={"url": store_url, "source": "doordash", "item_name": name},
                 )
             )

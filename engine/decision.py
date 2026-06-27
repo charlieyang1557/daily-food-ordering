@@ -96,16 +96,23 @@ def _candidate(candidate: Candidate | Mapping[str, Any] | None) -> Candidate | N
 
 
 def _hard_restriction_reason(candidate: Candidate, config: UserConfig) -> str | None:
+    # A CONCRETE declared-allergen match is the most specific, most serious
+    # violation — check it BEFORE the "can't verify" catch-all so a provider that
+    # DOES declare an allergen (e.g. parsed from a menu description) yields a
+    # precise allergy_violation rather than a generic unverified_safety. Both
+    # BLOCK at P0; this only sharpens the reason. A POSITIVE allergen declaration
+    # is trusted in the SAFE direction (to refuse) — we still never trust a
+    # "this is safe" claim, so the verified_safe gate below is unchanged.
+    allergies = set(_lowered(candidate.allergens))
+    for allergy in _lowered(config.restrictions.allergies):
+        if allergy in allergies:
+            return "allergy_violation"
+
     needs_verification = bool(
         config.restrictions.allergies or config.restrictions.dietary
     )
     if needs_verification and not candidate.verified_safe:
         return "unverified_safety"
-
-    allergies = set(_lowered(candidate.allergens))
-    for allergy in _lowered(config.restrictions.allergies):
-        if allergy in allergies:
-            return "allergy_violation"
 
     candidate_dietary = set(_lowered(candidate.dietary))
     for restriction in _lowered(config.restrictions.dietary):
