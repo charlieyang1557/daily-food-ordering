@@ -39,11 +39,12 @@ python3 run.py --provider doordash --login   # headed: pass the human check, sig
 python3 run.py --provider doordash --query thai --config demo/charlie-unrestricted.yaml
 ```
 
-The adapter retrieves a real menu, adds the item (auto-completing any required
-customization like spice/protein), drives the cart to the real checkout, and
-**hard-stops at the "Place Order" button** — returning `STOPPED_BEFORE_PAYMENT`
-with the real total + a screenshot. It never clicks pay. If it can't reach the
-pay gate it returns `FAILED` (never a fake success).
+In **one** browser session, the adapter retrieves a real menu, **searches the
+store for the engine's chosen dish**, adds it (auto-completing *every* required
+customization group — protein, spice, etc.), goes straight to the real checkout
+in-session, and **hard-stops at the "Place Order" button** — returning
+`STOPPED_BEFORE_PAYMENT` with the real total + a screenshot. It never clicks pay.
+If it can't reach the pay gate it returns `FAILED` (never a fake success).
 
 Verified live result:
 ```
@@ -57,9 +58,10 @@ Notes:
 - **Start with an empty DoorDash cart** for an accurate total — the adapter adds
   one item; it does not clear pre-existing cart items, so leftovers inflate the
   total (still reconciled against `daily_max`, failing closed if over).
-- If the engine-approved dish needs multi-group customization the adapter can't
-  resolve, it **substitutes the cheapest item it can add** and reports
-  `summary.substituted_for` — honest about what was actually carted.
+- The adapter finds the approved dish via the store **search box** and
+  auto-completes its required customization (any number of "select 1" groups).
+  Only if it genuinely can't add that dish does it **substitute the cheapest
+  item it can add**, reporting `summary.substituted_for` — honest either way.
 - Use the *unrestricted* config — with restrictions, real DoorDash items are
   `verified_safe=false` and the engine correctly BLOCKs them (safety-first).
 

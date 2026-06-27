@@ -488,6 +488,7 @@ def main(argv: list[str] | None = None) -> int:
         DoorDashProvider(profile_dir=args.profile).login()
         return 0
 
+    provider = None
     try:
         provider = _build_provider(args)
         result = run(
@@ -506,6 +507,15 @@ def main(argv: list[str] | None = None) -> int:
             _post_notify("⚠️ Daily Food Ordering — DoorDash unavailable (bot wall / login). "
                          "Re-run `--login`. Nothing ordered.")
         return 3
+    finally:
+        # Tear down any browser session the provider held open across
+        # discover() -> place_order() (DoorDash). Mock providers have no close().
+        _close = getattr(provider, "close", None)
+        if callable(_close):
+            try:
+                _close()
+            except Exception:  # noqa: BLE001
+                pass
 
     print(json.dumps(result.to_dict(), indent=2))
     if args.notify:

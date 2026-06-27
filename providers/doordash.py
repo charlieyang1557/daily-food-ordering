@@ -85,11 +85,14 @@ SELECTORS: dict[str, tuple[str, ...]] = {
         "[data-testid='OrderCartIconButton']",
         "button:has-text('Cart')",
     ),
+    # The post-add cart popover / drawer's "Continue" control. Its anchor id is
+    # CheckoutButton and its href is /consumer/checkout/ — clicking it goes
+    # straight to the real checkout IN SESSION (no fresh URL nav / error flash).
     "checkout_button": (
+        "[data-anchor-id='CheckoutButton']",
+        "[data-testid='CheckoutButton']",
         "a:has-text('Checkout')",
         "[data-anchor-id='OrderCartCtaButton']",
-        "button:has-text('Checkout')",
-        "a:has-text('Go to checkout')",
     ),
     # The button we STOP in front of — located to prove we reached the pay gate,
     # never clicked. Its text is "Place [Pickup ]Order $<total>".
@@ -130,6 +133,12 @@ class DoorDashProvider:
         self.timeout_ms = timeout_ms
         self.search_query = search_query
         self.max_stores = max_stores
+        # One warm browser session is held across discover() -> place_order() so
+        # the demo is a single smooth flow (no close/reopen). close() tears it
+        # down; run.py calls close() once the run finishes.
+        self._pw: Any | None = None
+        self._ctx: Any | None = None
+        self._page: Any | None = None
 
     # ---- pure, browser-free logic (unit-tested) --------------------------------
 
@@ -266,6 +275,29 @@ class DoorDashProvider:
         page.set_default_timeout(self.timeout_ms)
         return page
 
+    def _session_page(self) -> Any:
+        """The one shared, lazily-opened page reused across discover/place_order."""
+        if self._page is not None:
+            return self._page
+        from playwright.sync_api import sync_playwright
+
+        self._pw = sync_playwright().start()
+        self._ctx = self._launch(self._pw)
+        self._page = self._new_page(self._ctx)
+        return self._page
+
+    def close(self) -> None:
+        """Tear down the shared browser session. Idempotent; never raises."""
+        for closer in (
+            lambda: self._ctx.close() if self._ctx is not None else None,
+            lambda: self._pw.stop() if self._pw is not None else None,
+        ):
+            try:
+                closer()
+            except Exception:  # noqa: BLE001
+                pass
+        self._pw = self._ctx = self._page = None
+
     def _guard_page(self, page: Any) -> None:
         page.wait_for_timeout(2500)
         title = page.title()
@@ -367,43 +399,41 @@ class DoorDashProvider:
         return out
 
     def discover(self, config: UserConfig, *, query: str | None = None) -> list[Candidate]:
-        from playwright.sync_api import sync_playwright
-
+        # Uses the shared session and leaves it OPEN on the chosen store, so
+        # place_order() reuses the same page — one smooth browser flow. The
+        # session is closed by close() at the end of the run (run.py), not here.
         query = query or self.search_query or _default_query(config)
-        with sync_playwright() as p:
-            context = self._launch(p)
-            page = self._new_page(context)
-            try:
-                page.goto(f"{BASE_URL}/search/store/{quote(query)}/", wait_until="domcontentloaded")
-                self._guard_page(page)
-                # Collect a few store links, then open each until one yields a menu.
-                try:
-                    hrefs = page.eval_on_selector_all(
-                        "a[data-anchor-id='StoreCard'], a[href*='/store/']",
-                        "els => Array.from(new Set(els.map(e => e.getAttribute('href'))))"
-                        # real store pages are /store/<slug>-<id>/ — exclude
-                        # /search/store/<query>/ dish-search links.
-                        ".filter(h => h && h.includes('/store/') && !h.includes('/search/'))",
-                    )
-                except Exception:  # noqa: BLE001
-                    hrefs = []
-                for href in hrefs[: self.max_stores]:
-                    target = self._absolute(href)
-                    if not target.startswith(f"{BASE_URL}/"):
-                        continue
-                    page.goto(target, wait_until="domcontentloaded")
-                    page.wait_for_timeout(2500)
-                    if self.is_bot_walled(page.title(), ""):
-                        continue
-                    for _ in range(4):
-                        page.mouse.wheel(0, 1500)
-                        page.wait_for_timeout(700)
-                    candidates = self._parse_store_menu(page, store_url=target)
-                    if candidates:
-                        return candidates
-                return []
-            finally:
-                context.close()
+        page = self._session_page()
+        page.goto(f"{BASE_URL}/search/store/{quote(query)}/", wait_until="domcontentloaded")
+        self._guard_page(page)
+        # Collect a few store links, then open each until one yields a menu.
+        try:
+            hrefs = page.eval_on_selector_all(
+                "a[data-anchor-id='StoreCard'], a[href*='/store/']",
+                "els => Array.from(new Set(els.map(e => e.getAttribute('href'))))"
+                # real store pages are /store/<slug>-<id>/ — exclude
+                # /search/store/<query>/ dish-search links.
+                ".filter(h => h && h.includes('/store/') && !h.includes('/search/'))",
+            )
+        except Exception:  # noqa: BLE001
+            hrefs = []
+        for href in hrefs[: self.max_stores]:
+            target = self._absolute(href)
+            if not target.startswith(f"{BASE_URL}/"):
+                continue
+            page.goto(target, wait_until="domcontentloaded")
+            page.wait_for_timeout(2500)
+            if self.is_bot_walled(page.title(), ""):
+                continue
+            for _ in range(4):
+                page.mouse.wheel(0, 1500)
+                page.wait_for_timeout(700)
+            # Carry the post-redirect URL the page actually settled on, so
+            # place_order() can detect it's already here and skip re-navigating.
+            candidates = self._parse_store_menu(page, store_url=page.url)
+            if candidates:
+                return candidates
+        return []
 
     def discover_fallback(self, config: UserConfig) -> list[Candidate]:
         # Search the user's fallback restaurant. Note: real DoorDash items stay
@@ -422,94 +452,100 @@ class DoorDashProvider:
         budget_ceiling_usd: float | None = None,
         auto_approve_ceiling_usd: float | None = None,
     ) -> OrderResult:
-        from playwright.sync_api import sync_playwright
-
         store_url = candidate.metadata.get("url") if candidate.metadata else None
         # Only ever navigate to doordash.com — never an attacker-crafted URL.
         if not store_url or not store_url.startswith(f"{BASE_URL}/"):
             raise ProviderUnavailable("candidate has no DoorDash store URL to order from")
-        with sync_playwright() as p:
-            context = self._launch(p)
-            page = self._new_page(context)
-            try:
-                page.goto(store_url, wait_until="domcontentloaded")
-                self._guard_page(page)
 
-                # Cart the approved item, or the cheapest item that adds without
-                # required customization. Report what was ACTUALLY carted.
-                added_name, added_price = self._add_item_to_cart(page, candidate)
-                carted = candidate
-                if added_name.strip().lower() != candidate.item_name.strip().lower():
-                    # A different item was carted — its safety is NOT the approved
-                    # item's, so mark it unverified, and re-apply the AUTO band to
-                    # its own price (a pricier substitute the engine never AUTO'd
-                    # must not be auto-placed).
-                    carted = Candidate(
-                        restaurant=candidate.restaurant,
-                        item_name=added_name,
-                        price_usd=added_price,
-                        cuisine=candidate.cuisine,
-                        dietary=candidate.dietary,
-                        allergens=candidate.allergens,
-                        verified_safe=False,
-                        metadata=candidate.metadata,
-                    )
-                    if auto_approve_ceiling_usd is not None and added_price > auto_approve_ceiling_usd:
-                        return OrderResult(
-                            status=OrderStatus.BLOCKED, provider=self.name,
-                            restaurant=carted.restaurant, item_name=carted.item_name,
-                            price_usd=added_price, idempotency_key=idempotency_key,
-                            reason=f"substitute_above_auto_approve:{added_price}>{auto_approve_ceiling_usd}",
-                            charged=False,
-                            summary={"substituted_for": candidate.item_name,
-                                     "carted_price_usd": added_price,
-                                     "auto_approve_ceiling_usd": auto_approve_ceiling_usd},
-                        )
+        # Reuse the warm session discover() left open. If we're already on this
+        # store (the common path), don't re-navigate — that's the "1 browser
+        # action" smoothness. Only (re)load + re-guard if we're elsewhere (e.g.
+        # place_order called without a preceding discover, or a fallback store).
+        page = self._session_page()
+        if not self._on_store(page, store_url):
+            page.goto(store_url, wait_until="domcontentloaded")
+            self._guard_page(page)
 
-                self._go_to_checkout(page)
-
-                # HARD STOP. The success criterion is reaching the real pay gate;
-                # cart-item presence is recorded, and the REAL total is reconciled
-                # against budget (fail closed). We never click pay.
-                self._require_pay_gate(page)
-                cart_verified = self._verify_cart(page, carted)
-
-                total = self._parse_checkout_total(page)
-                summary = self._read_order_summary(page, carted, total)
-                summary["cart_verified"] = cart_verified
-                if carted is not candidate:
-                    summary["substituted_for"] = candidate.item_name
-                    summary["substitution_reason"] = "approved item required customization"
-                screenshot_path = self._screenshot(page, idempotency_key)
-
-                # Fail closed: STOPPED_BEFORE_PAYMENT must mean the carted item is
-                # actually on the checkout page. If we can't confirm it, don't
-                # claim success — never fake a stop-before-pay.
-                if not cart_verified:
-                    return OrderResult(
-                        status=OrderStatus.FAILED, provider=self.name,
-                        restaurant=carted.restaurant, item_name=carted.item_name,
-                        price_usd=carted.price_usd, idempotency_key=idempotency_key,
-                        reason="cart_unverified: carted item not confirmed at checkout",
-                        charged=False, summary=summary, screenshot_path=screenshot_path,
-                    )
-
-                failed = self._reconcile_budget(
-                    carted, idempotency_key=idempotency_key, total=total,
-                    ceiling=budget_ceiling_usd, summary=summary, screenshot_path=screenshot_path,
+        # Cart the approved item, or the cheapest item that adds without
+        # required customization. Report what was ACTUALLY carted.
+        added_name, added_price = self._add_item_to_cart(page, candidate)
+        carted = candidate
+        if added_name.strip().lower() != candidate.item_name.strip().lower():
+            # A different item was carted — its safety is NOT the approved
+            # item's, so mark it unverified, and re-apply the AUTO band to
+            # its own price (a pricier substitute the engine never AUTO'd
+            # must not be auto-placed).
+            carted = Candidate(
+                restaurant=candidate.restaurant,
+                item_name=added_name,
+                price_usd=added_price,
+                cuisine=candidate.cuisine,
+                dietary=candidate.dietary,
+                allergens=candidate.allergens,
+                verified_safe=False,
+                metadata=candidate.metadata,
+            )
+            if auto_approve_ceiling_usd is not None and added_price > auto_approve_ceiling_usd:
+                return OrderResult(
+                    status=OrderStatus.BLOCKED, provider=self.name,
+                    restaurant=carted.restaurant, item_name=carted.item_name,
+                    price_usd=added_price, idempotency_key=idempotency_key,
+                    reason=f"substitute_above_auto_approve:{added_price}>{auto_approve_ceiling_usd}",
+                    charged=False,
+                    summary={"substituted_for": candidate.item_name,
+                             "carted_price_usd": added_price,
+                             "auto_approve_ceiling_usd": auto_approve_ceiling_usd},
                 )
-                if failed is not None:
-                    return failed
 
-                if self._payment_authorized(complete_payment):
-                    summary["payment_authorization"] = "passed_gates_but_disabled_in_build"
+        self._go_to_checkout(page)
 
-                return self._build_stopped_result(
-                    carted, idempotency_key=idempotency_key, summary=summary,
-                    screenshot_path=screenshot_path,
-                )
-            finally:
-                context.close()
+        # HARD STOP. The success criterion is reaching the real pay gate;
+        # cart-item presence is recorded, and the REAL total is reconciled
+        # against budget (fail closed). We never click pay.
+        self._require_pay_gate(page)
+        cart_verified = self._verify_cart(page, carted)
+
+        total = self._parse_checkout_total(page)
+        summary = self._read_order_summary(page, carted, total)
+        summary["cart_verified"] = cart_verified
+        if carted is not candidate:
+            summary["substituted_for"] = candidate.item_name
+            summary["substitution_reason"] = "approved item required customization"
+        screenshot_path = self._screenshot(page, idempotency_key)
+
+        # Fail closed: STOPPED_BEFORE_PAYMENT must mean the carted item is
+        # actually on the checkout page. If we can't confirm it, don't
+        # claim success — never fake a stop-before-pay.
+        if not cart_verified:
+            return OrderResult(
+                status=OrderStatus.FAILED, provider=self.name,
+                restaurant=carted.restaurant, item_name=carted.item_name,
+                price_usd=carted.price_usd, idempotency_key=idempotency_key,
+                reason="cart_unverified: carted item not confirmed at checkout",
+                charged=False, summary=summary, screenshot_path=screenshot_path,
+            )
+
+        failed = self._reconcile_budget(
+            carted, idempotency_key=idempotency_key, total=total,
+            ceiling=budget_ceiling_usd, summary=summary, screenshot_path=screenshot_path,
+        )
+        if failed is not None:
+            return failed
+
+        if self._payment_authorized(complete_payment):
+            summary["payment_authorization"] = "passed_gates_but_disabled_in_build"
+
+        return self._build_stopped_result(
+            carted, idempotency_key=idempotency_key, summary=summary,
+            screenshot_path=screenshot_path,
+        )
+
+    def _on_store(self, page: Any, store_url: str) -> bool:
+        """True if `page` is already on `store_url` (ignoring query string)."""
+        try:
+            return page.url.split("?")[0].rstrip("/") == store_url.split("?")[0].rstrip("/")
+        except Exception:  # noqa: BLE001
+            return False
 
     # ---- browser helpers -------------------------------------------------------
 
@@ -573,15 +609,43 @@ class DoorDashProvider:
         except Exception:  # noqa: BLE001
             return 0
 
+    def _wait_cart_increment(self, page: Any, before: int, *, timeout_ms: int = 6000) -> bool:
+        """Poll the cart badge until it rises above `before`.
+
+        The badge updates asynchronously after an add (a network round-trip), so
+        a single immediate read races it: a *successful* customized add can read
+        as still-`before` and be mistaken for a failure — which used to trigger a
+        needless substitution AND a double-add (two items, inflated total). We
+        poll for up to `timeout_ms` instead.
+        """
+        waited = 0
+        while waited < timeout_ms:
+            if self._cart_count(page) > before:
+                return True
+            page.wait_for_timeout(500)
+            waited += 500
+        return self._cart_count(page) > before
+
     def _add_item_to_cart(self, page: Any, candidate: Candidate) -> tuple[str, float]:
-        """Add the approved item — or, if it needs required customization (a
-        modal), the cheapest other item that adds DIRECTLY. Returns the
-        (name, price) actually carted, or raises ProviderUnavailable.
+        """Cart the engine-approved dish; failing that, the cheapest item that
+        adds cleanly. Returns the (name, price) ACTUALLY carted, or raises.
         """
         try:
             page.wait_for_selector("[data-anchor-id='MenuItem']", timeout=12000)
         except Exception:  # noqa: BLE001
             pass
+
+        # 1) Smooth + reliable: filter the menu to the approved dish via the
+        #    in-store search box and add THAT — so we cart the user's actual
+        #    choice rather than substituting just because the full-menu DOM order
+        #    differs from discovery (DoorDash reorders/lazy-loads between loads).
+        found = self._search_and_add_named(page, candidate)
+        if found is not None:
+            return found
+
+        # 2) Fall back to the full menu (cheapest item that adds cleanly). Clear
+        #    the search filter first so the whole menu is visible again.
+        self._clear_in_store_search(page)
         for _ in range(3):
             page.mouse.wheel(0, 1500)
             page.wait_for_timeout(700)
@@ -600,41 +664,118 @@ class DoorDashProvider:
                 continue
             parsed.append((i, self._menu_item_name(text), price))
 
-        # Try the engine-approved item first, then cheapest-first among the rest.
+        # Approved item first (if it surfaced here), then cheapest among the rest.
         approved = candidate.item_name.strip().lower()
         parsed.sort(key=lambda t: (0 if t[1].strip().lower() == approved else 1, t[2]))
 
         for idx, name, price in parsed[:8]:
             quick = items.nth(idx).locator("[data-testid='quick-add-button']").first
-            if quick.count() == 0:
-                continue
-            before = self._cart_count(page)
-            try:
-                quick.scroll_into_view_if_needed()
-                quick.click(timeout=8000)
-            except Exception:  # noqa: BLE001
-                try:
-                    quick.click(force=True)
-                except Exception:  # noqa: BLE001
-                    continue
-            page.wait_for_timeout(2500)
-            if self._cart_count(page) > before:
-                return (name, price)  # added directly — no required customization
-            # A customization modal opened — satisfy required options, then add.
-            if self._complete_item_modal(page) and self._cart_count(page) > before:
-                return (name, price)
-            self._close_modal(page)
+            added = self._attempt_add(page, quick, name, price)
+            if added is not None:
+                return added
         raise ProviderUnavailable("could not add any item to the cart on this store")
 
-    def _complete_item_modal(self, page: Any) -> bool:
-        """Satisfy a customization modal's REQUIRED option groups, then Add.
-
-        Required options are radios/checkboxes; the clickable element is the row
-        (the grandparent of the hidden <input>), not the input itself. We pick
-        the first option in each unsatisfied group until the Add button enables.
+    def _attempt_add(
+        self, page: Any, quick: Any, name: str, price: float
+    ) -> tuple[str, float] | None:
+        """Click a quick-add, then confirm (polling) the item reached the cart,
+        completing any required-customization modal. Returns (name, price)/None.
         """
-        for _ in range(8):
-            add = page.locator("[data-anchor-id*='AddToCart'], [data-testid*='AddToCart']").first
+        if quick is None or quick.count() == 0:
+            return None
+        before = self._cart_count(page)
+        try:
+            quick.scroll_into_view_if_needed()
+            quick.click(timeout=8000)
+        except Exception:  # noqa: BLE001
+            try:
+                quick.click(force=True)
+            except Exception:  # noqa: BLE001
+                return None
+        # Added directly (no required customization)? Poll — the badge updates
+        # asynchronously, so a single read races the add.
+        if self._wait_cart_increment(page, before, timeout_ms=4000):
+            return (name, price)
+        # Otherwise a customization modal opened — satisfy required groups, then
+        # confirm the add landed (polling again).
+        if self._complete_item_modal(page) and self._wait_cart_increment(
+            page, before, timeout_ms=7000
+        ):
+            return (name, price)
+        self._close_modal(page)
+        return None
+
+    @staticmethod
+    def _core_dish_name(name: str) -> str:
+        # Strip a leading menu code ("A10 - ", "C9 - ", "33. ") so the in-store
+        # search matches on the dish words DoorDash actually indexes.
+        core = re.sub(r"^[A-Za-z]{0,3}\d+[A-Za-z]?[.\)]?\s*[-–]?\s*", "", name).strip()
+        return core or name
+
+    def _clear_in_store_search(self, page: Any) -> None:
+        box = page.locator("input[placeholder*='Search' i]").first
+        if box.count() == 0:
+            return
+        try:
+            box.fill("")
+            page.wait_for_timeout(1200)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _search_and_add_named(
+        self, page: Any, candidate: Candidate
+    ) -> tuple[str, float] | None:
+        """Type the dish into the in-store search box, then add the matching
+        item. Returns (name, price) carted, or None if search can't surface it.
+        """
+        box = page.locator("input[placeholder*='Search' i]").first
+        if box.count() == 0:
+            return None
+        core = self._core_dish_name(candidate.item_name)
+        try:
+            box.click()
+            box.fill(core)
+        except Exception:  # noqa: BLE001
+            return None
+        page.wait_for_timeout(2200)
+        items = page.locator("[data-anchor-id='MenuItem']")
+        approved = candidate.item_name.strip().lower()
+        core_l = core.lower()
+        for i in range(min(items.count(), 8)):
+            try:
+                text = items.nth(i).inner_text()
+            except Exception:  # noqa: BLE001
+                continue
+            name = self._menu_item_name(text)
+            price = self.parse_price(text)
+            if price is None:
+                continue
+            nl = name.strip().lower()
+            if nl != approved and core_l not in nl:
+                continue
+            quick = items.nth(i).locator("[data-testid='quick-add-button']").first
+            added = self._attempt_add(page, quick, name, price)
+            if added is not None:
+                return added
+        return None
+
+    def _complete_item_modal(self, page: Any) -> bool:
+        """Satisfy ALL of a customization modal's required option groups, then Add.
+
+        Works uniformly across dishes with any number of required groups. The
+        radios carry no shared `name`, so we can't group them up front; instead
+        we click EVERY radio's row in DOM order. The last-clicked radio in each
+        group stays selected, so one-per-group falls out naturally; optional
+        checkbox add-ons are left untouched. We stop the moment the Add button
+        stops demanding a "required"/"select" choice (so a dish needing 2 groups
+        is handled just like one needing 1 — no "first section only" bug).
+        """
+        add_sel = "[data-anchor-id*='AddToCart'], [data-testid*='AddToCart']"
+        radios = page.locator("[role='dialog'] input[type='radio']")
+        total = min(radios.count(), 30)
+        # `total + 1` so we re-check the Add button after the final radio click.
+        for i in range(total + 1):
+            add = page.locator(add_sel).first
             if add.count() == 0:
                 return False
             try:
@@ -643,30 +784,30 @@ class DoorDashProvider:
                 text = ""
             if text and "required" not in text and "select" not in text:
                 self._click_resilient(add)
-                page.wait_for_timeout(2000)
+                page.wait_for_timeout(1800)
                 return True
-            # Click the row of the first not-yet-selected radio.
-            radios = page.locator("[role='dialog'] input[type='radio']")
-            clicked = False
-            for k in range(min(radios.count(), 30)):
-                radio = radios.nth(k)
-                try:
-                    if radio.is_checked():
-                        continue
-                except Exception:  # noqa: BLE001
-                    pass
-                row = radio.locator("xpath=../..")  # grandparent = clickable option row
+            if i >= total:
+                break
+            radio = radios.nth(i)
+            # Reliable selection: a JS click on the input fires React's onChange
+            # even when the input is visually hidden — more dependable than
+            # force-clicking the row (which can land on padding and not register,
+            # leaving a required group unsatisfied and forcing a substitution).
+            selected = False
+            try:
+                radio.evaluate("el => el.click()")
+                selected = True
+            except Exception:  # noqa: BLE001
+                pass
+            if not selected:
+                row = radio.locator("xpath=../..")  # grandparent = clickable row
                 try:
                     target = row if row.count() else radio
                     target.scroll_into_view_if_needed()
-                    target.click(force=True, timeout=4000)
-                    clicked = True
+                    target.click(force=True, timeout=3500)
                 except Exception:  # noqa: BLE001
                     pass
-                page.wait_for_timeout(1000)
-                break
-            if not clicked:
-                return False
+            page.wait_for_timeout(500)
         return False
 
     def _close_modal(self, page: Any) -> None:
@@ -689,21 +830,18 @@ class DoorDashProvider:
             pass
 
     def _go_to_checkout(self, page: Any) -> None:
-        # Most robust: go straight to the checkout page (the cart is session
-        # state), avoiding the cart-drawer animation/overlay.
-        try:
-            page.goto(f"{BASE_URL}/consumer/checkout/", wait_until="domcontentloaded")
-            page.wait_for_timeout(4000)
-        except Exception:  # noqa: BLE001
-            pass
-        if self._first_locator(page, "place_order_button") is not None:
-            return
-        # Fallback: click through the cart drawer.
-        cart = self._first_locator(page, "cart_button")
-        if cart is not None:
-            self._click_resilient(cart)
-            page.wait_for_timeout(1800)
+        # Smooth, in-session: right after adding, the cart popover already shows
+        # the CheckoutButton ("Continue" -> /consumer/checkout/). Click it to go
+        # straight to the real checkout — no fresh URL navigation, which flashed
+        # an error page before the cart context loaded. Only fall back to opening
+        # the header cart if that button isn't already on screen.
         checkout = self._first_locator(page, "checkout_button")
+        if checkout is None:
+            cart = self._first_locator(page, "cart_button")
+            if cart is not None:
+                self._click_resilient(cart)
+                page.wait_for_timeout(1500)
+            checkout = self._first_locator(page, "checkout_button")
         if checkout is not None:
             self._click_resilient(checkout)
             page.wait_for_load_state("domcontentloaded")

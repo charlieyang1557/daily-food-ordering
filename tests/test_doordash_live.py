@@ -37,3 +37,7 @@ def test_discover_hits_real_platform_and_degrades_gracefully(tmp_path):
     except ProviderUnavailable as error:
         # Cold profile path: real contact, graceful failure. This is success too.
         assert "doordash" in str(error).lower()
+    finally:
+        # discover() now holds the browser session open for a follow-on
+        # place_order(); close it explicitly when used standalone.
+        provider.close()
