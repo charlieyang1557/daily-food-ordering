@@ -205,7 +205,10 @@ def run(
                     config.budget.auto_approve_under_usd
                     if decision.status is DecisionStatus.AUTO else None
                 ),
-                clear_cart=clear_cart,
+                # Opt-in to clearing a non-empty cart via EITHER the --clear-cart
+                # flag OR the config (demo configs set clear_cart: true, so the
+                # agent need not remember the flag).
+                clear_cart=clear_cart or config.clear_cart,
             )
             # STOPPED_BEFORE_PAYMENT is "carted, not paid" — NOT a placed order:
             # it neither sets `placed` nor consumes the daily slot. Only a real
@@ -225,6 +228,48 @@ def run(
                 idempotency_key=idempotency_key,
                 reason=f"{type(error).__name__}: {error}",
             )
+
+    # Graceful degradation (failure-modes.md §C "Favorite unavailable", P2): report
+    # ONLY when a real DoorDash order carted from a store that matches NEITHER any
+    # configured favorite NOR the pre-vetted fallback — i.e. discovery genuinely
+    # landed elsewhere because the preferred store(s) weren't available. We state the
+    # FACT (carted from a non-preferred store), not an unverified cause like "closed".
+    # Names are punctuation-normalized and ALL favorites are checked, so "McDonald's"
+    # vs "McDonalds" or favorite #2 don't trip a false report.
+    if (order_result is not None and order_result.restaurant
+            and order_result.status in (OrderStatus.STOPPED_BEFORE_PAYMENT, OrderStatus.PLACED)
+            and getattr(provider, "name", "") == "doordash"
+            and config.preferences.favorite_restaurants):
+        def _norm(name: str) -> str:
+            s = (name or "").lower().replace("&", " and ")
+            s = "".join(c if (c.isalnum() or c == " ") else " " for c in s)
+            return " ".join(s.split())
+
+        def _same(a: str, b: str) -> bool:
+            na, nb = _norm(a), _norm(b)
+            if not na or not nb:
+                return False
+            if na == nb:  # equal after punctuation-normalization (McDonald's==McDonalds)
+                return True
+            # A MULTI-word favorite that is a full token-subset of the carted name
+            # (e.g. "Thaibodia Bistro" within "Thaibodia Bistro Milpitas"). A bare
+            # 1-word favorite ("Pho") must NOT swallow a different store ("Pho Newark").
+            short, long_ = (na, nb) if len(na) <= len(nb) else (nb, na)
+            st, lt = set(short.split()), set(long_.split())
+            return len(st) >= 2 and st <= lt
+
+        carted = order_result.restaurant
+        known = list(config.preferences.favorite_restaurants)
+        if config.fallback.restaurant:
+            known.append(config.fallback.restaurant)
+        if not any(_same(carted, store) for store in known):
+            order_result.summary["degraded_from_preferred"] = config.preferences.favorite_restaurants[0]
+            order_result.summary["ordered_from"] = carted
+            order_result.summary["degradation_reason"] = (
+                "preferred restaurant(s) not available for this order — ordered "
+                "from the next available store"
+            )
+
     reached_gate = order_result is not None and order_result.status in (
         OrderStatus.PLACED, OrderStatus.STOPPED_BEFORE_PAYMENT
     )

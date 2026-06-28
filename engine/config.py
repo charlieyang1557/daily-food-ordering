@@ -92,6 +92,7 @@ def load_config_from_dict(raw: Mapping[str, Any]) -> UserConfig:
         restrictions=restrictions,
         fallback=fallback,
         notifications=notifications,
+        clear_cart=_as_bool(_first(raw, "clear_cart", default=False), "clear_cart"),
     )
 
 
@@ -203,6 +204,22 @@ def _first(raw: Mapping[str, Any], *names: str, default: Any = None) -> Any:
         if name in raw:
             return raw[name]
     return default
+
+
+def _as_bool(value: Any, field_name: str) -> bool:
+    """Strict boolean for a DESTRUCTIVE flag — must fail SAFE, never on `bool()`
+    coercion (where the string "false" is truthy). A real YAML bool passes through;
+    an explicit true/false token is honored; anything ambiguous is rejected loudly."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    token = str(value).strip().lower()
+    if token in ("true", "yes", "on", "1"):
+        return True
+    if token in ("false", "no", "off", "0", ""):
+        return False
+    raise ConfigError(f"{field_name} must be true or false (got {value!r})")
 
 
 def _positive_money(value: Any, field_name: str) -> float:
