@@ -37,7 +37,7 @@ Every failure runs one path: **detect → classify severity → resolve → noti
 | No restaurant open / nothing orderable | P0* | try fallback (→ CONFIRM `fallback_in_use`) → else **BLOCK `no_candidate`** + notify |
 | Preferred cuisine unavailable | P2 | degrade through ranked cuisines → fallback → skip |
 | **No compliant / safe option** | **P0** | safety-checked fallback → **BLOCK + loud notify** if none. **NEVER relax** |
-| Favorite / pinned restaurant **closed** or unavailable | P2 | discovery degrades to the next available store and orders there; the switch is surfaced in the result as `summary.degradation_reason` ("preferred restaurant closed or unavailable — fell back to the next available store") |
+| Favorite / pinned restaurant unavailable (closed, out of range, no match) | P2 | discovery degrades to the next available store and orders there; surfaced **honestly** in `summary.degradation_reason` ("preferred restaurant(s) not available for this order — ordered from the next available store") — reported only when the carted store matches **no** favorite and **not** the pre-vetted fallback (it states the fact, not an unverified "closed" cause) |
 | Can't verify dietary compliance | P0 | mark uncertain → dropped in v1 (`unverified_safety`, filtered, never silently kept) |
 | Item flagged unavailable (reaches decide) | P2 | `unavailable` — but run.py filters these pre-decision, so the reachable empty-set outcome is `no_candidate` (P0) |
 

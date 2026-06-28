@@ -58,7 +58,7 @@ def test_preferred_dish_no_match_fails_closed():
 # ---- Fix 2: auto-approve ceiling enforced for AUTO, suppressed for CONFIRM ----
 
 class _CaptureProvider:
-    name = "capture"
+    name = "doordash"  # degradation report is gated to the real (doordash) provider
 
     def __init__(self, price):
         self.price = price
@@ -97,15 +97,47 @@ def test_confirmed_placement_suppresses_auto_ceiling(tmp_path):
 
 # ---- Degradation report: carted restaurant != preferred (closed favorite) -----
 
-def test_degradation_reported_when_not_from_preferred(tmp_path):
+def _write(tmp_path, **extra):
     import yaml
-    prov = _CaptureProvider(price=12)  # discovers/carts restaurant "R" (AUTO)
     p = tmp_path / "c.yaml"
-    p.write_text(yaml.safe_dump({
-        "budget": {"daily_max_usd": 50, "auto_approve_under_usd": 18},
-        "preferences": {"favorite_restaurants": ["Thaibodia Bistro"]},
-    }))
-    s = run(str(p), provider=prov).order_result.summary
+    p.write_text(yaml.safe_dump({"budget": {"daily_max_usd": 50, "auto_approve_under_usd": 18}, **extra}))
+    return str(p)
+
+
+def test_degradation_reported_when_not_from_preferred(tmp_path):
+    prov = _CaptureProvider(price=12)  # carts "Pho Newark" (AUTO)
+    s = run(_write(tmp_path, preferences={"favorite_restaurants": ["Thaibodia Bistro"]}),
+            provider=prov).order_result.summary
     assert s["degraded_from_preferred"] == "Thaibodia Bistro"
     assert s["ordered_from"] == "Pho Newark"
-    assert "closed or unavailable" in s["degradation_reason"]
+    assert "not available for this order" in s["degradation_reason"]
+
+
+def test_no_false_degradation_for_favorite_spelling_variant(tmp_path):
+    prov = _CaptureProvider(price=12)  # carts "Pho Newark"
+    s = run(_write(tmp_path, preferences={"favorite_restaurants": ["Pho Newark!"]}),
+            provider=prov).order_result.summary
+    assert "degradation_reason" not in s  # punctuation variant of the carted store
+
+
+def test_no_false_degradation_when_carted_is_the_fallback(tmp_path):
+    prov = _CaptureProvider(price=12)  # carts "Pho Newark"
+    s = run(_write(tmp_path,
+                   preferences={"favorite_restaurants": ["Thaibodia Bistro"]},
+                   fallback={"restaurant": "Pho Newark"}),
+            provider=prov).order_result.summary
+    assert "degradation_reason" not in s  # the pre-vetted fallback is not a "degradation"
+
+
+# ---- Fix: strict clear_cart boolean (a destructive flag fails SAFE) ------------
+
+def test_clear_cart_strict_boolean():
+    import pytest
+    from engine.config import ConfigError, load_config_from_dict
+    base = {"budget": {"daily_max_usd": 25}}
+    assert load_config_from_dict({**base, "clear_cart": True}).clear_cart is True
+    assert load_config_from_dict({**base, "clear_cart": "false"}).clear_cart is False
+    assert load_config_from_dict({**base, "clear_cart": "0"}).clear_cart is False
+    assert load_config_from_dict(base).clear_cart is False
+    with pytest.raises(ConfigError):
+        load_config_from_dict({**base, "clear_cart": "maybe"})
