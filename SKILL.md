@@ -80,13 +80,25 @@ Never use mock to fulfill a real order.
 | `order my daily food demo fail 1` | `run.py --provider doordash --query thai --config demo/over-budget-live.yaml` | 🌐 **LIVE BLOCK `over_daily_max`** (P1) — browses the real menu; every dish over the $5 cap · **§D** |
 | `order my daily food demo fail 2` | `run.py --provider doordash --query thai --clear-cart --config demo/over-auto-live.yaml` | 🌐 **LIVE CONFIRM `above_auto_approve`** (P1) — real ~$18 dish over the $5 auto-approve, asks first · **§D** |
 | `order my daily food demo fail 3` | `run.py --provider doordash --query thai --config demo/charlie-no-fallback.yaml` | 🌐 **LIVE BLOCK `unverified_safety`** (P0) — restricted user; DoorDash can't prove a dish is peanut-free · **§C** |
-| `order my daily food demo fail 4` | `run.py --provider doordash --query "thai recipe" --dish "pad thai" --config demo/charlie-no-fallback.yaml` | 🌐 **LIVE BLOCK `allergy_violation`** (P0) — orders Pad Thai at Thai Recipe Cuisine; its card declares peanuts → refused · **§C** |
+| `order my daily food demo fail 4` | `run.py --provider doordash --query "thai recipe" --dish "pad thai" --config demo/charlie-no-fallback.yaml` | 🌐 **LIVE BLOCK `allergy_violation`** (P0) — orders Pad Thai at Thai Recipe Cuisine; its card declares peanuts → refused. **Needs Thai Recipe OPEN** (closed → `--dish` fails closed → `no_candidate`, still P0-safe) · **§C** |
 | `order my daily food demo fail 5` | `run.py --provider mock --scenario allergen --config demo/charlie-trusted.yaml` | **CONFIRM `fallback_in_use`** (P1, mock) — rescued to the safe Chipotle fallback (live fallback is also unverifiable) · **§C** |
 | `order my daily food demo fail 6` | `run.py --config demo/invalid.yaml` | **exit 2 `config_invalid`** — fail-loud at config load, no browser by design · **§A** |
 
 (`user_preferences.yaml` holds the user's REAL prefs — peanut allergy, vegetarian.
 On live DoorDash those can't be verified safe, so it BLOCKs; use it in place of
 charlie-unrestricted only if the user explicitly asks for the "real prefs" run.)
+
+**Live-demo preconditions — verify before demoing:**
+- **Run live (doordash) demos ONE AT A TIME.** Each live run holds the single
+  warmed Chrome profile; a second concurrent live run fails fast with
+  `{"error":"provider_busy"}` (exit 4) instead of a silent timeout. Wait for the
+  first to finish before starting the next.
+- **fail 4 needs its target restaurant OPEN.** The declared-allergen block is tied
+  to one real menu card (Thai Recipe Cuisine's Pad Thai → peanuts). If that store
+  is closed, `--dish` fails closed → the engine emits `no_candidate` (P0, still
+  safe) instead of `allergy_violation`. Confirm it's open (and still declares
+  peanuts), or repoint `--query`/`--dish` to another store whose card declares the
+  allergen.
 
 It prints JSON: `{decision:{decision,reason,severity}, placed, order_result, steps}`.
 Parse it. Do not recompute the decision.
@@ -95,6 +107,9 @@ If it exits non-zero with `{"error":"config_invalid",...}` → the config is uns
 to use; notify the user with the exact detail, fix nothing silently, place nothing.
 If `{"error":"provider_unavailable",...}` (DoorDash bot wall / not logged in) →
 notify the user to re-run `--login`; place nothing.
+If `{"error":"provider_busy",...}` (exit 4 — another live run already holds the
+browser profile) → do NOT retry immediately; wait for the in-flight run to finish,
+then re-run. Place nothing. (Live demos run one at a time.)
 
 ### Step 2 — Resolve the verdict                              [agent + code]
 Read `decision.decision`:

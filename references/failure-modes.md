@@ -60,6 +60,7 @@ CONFIRM `fallback_in_use` (P1) instead.
 | Order rejected (item OOS) | P2 | re-pick → fallback → skip |
 | Payment declined | P1 | BLOCK + notify ("update payment"); no retry, no card-swap |
 | **Partial failure (charged, state unknown)** | **P1** | reconcile via the key; never blind-retry; unresolved → loud, honest escalation |
+| Concurrent live run (shared browser profile) | — | advisory flock on the profile dir: the 2nd run (incl. `--login`) fails fast → `provider_busy` (exit 4), never a silent timeout — run live demos sequentially |
 
 ## F · Confirm / notify
 | mode | severity | resolve |
@@ -101,7 +102,11 @@ the demo, the engine, and this taxonomy all agree.
 fail 1–4 run **live** on DoorDash (the browser opens, real discovery → decision).
 fail 4 targets a dish whose card *declares* an allergen (Pad Thai → peanuts) with
 `--dish`, so the engine emits a precise `allergy_violation` rather than the generic
-`unverified_safety`. Only fail 5 (fallback rescue) uses the **mock** provider —
+`unverified_safety` — but **only while Thai Recipe Cuisine is open** (closed →
+`--dish` fails closed → `no_candidate`, P0-safe, not `allergy_violation`). Live
+(doordash) demos run **one at a time**: the shared warmed Chrome profile is locked,
+so a concurrent live run returns `provider_busy` (exit 4), never a silent timeout.
+Only fail 5 (fallback rescue) uses the **mock** provider —
 a *verified-safe* fallback can't come from a platform we never trust for safety.
 fail 6 fails at config load (no browser). `order my daily food` (no `fail N`) is the
 live run that carts a dish and stops before pay.

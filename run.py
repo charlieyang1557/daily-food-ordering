@@ -31,6 +31,7 @@ from providers.base import (
     OrderResult,
     OrderStatus,
     Provider,
+    ProviderBusy,
     ProviderError,
     ProviderUnavailable,
 )
@@ -564,7 +565,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.provider == "doordash" and args.login:
         from providers.doordash import DoorDashProvider
 
-        DoorDashProvider(profile_dir=args.profile).login()
+        try:
+            DoorDashProvider(profile_dir=args.profile).login()
+        except ProviderBusy as error:
+            print(json.dumps({"error": "provider_busy", "detail": str(error)}, indent=2))
+            return 4
         return 0
 
     provider = None
@@ -582,6 +587,14 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as error:
         print(json.dumps({"error": "config_invalid", "detail": str(error)}, indent=2))
         return 2
+    except ProviderBusy as error:
+        # A concurrent live run holds the browser profile — fail fast & clearly
+        # (exit 4, distinct from provider_unavailable) instead of a silent timeout.
+        print(json.dumps({"error": "provider_busy", "detail": str(error)}, indent=2))
+        if args.notify:
+            _post_notify("⏳ Daily Food Ordering — another live run is already in "
+                         "progress. Run the demos one at a time; nothing ordered.")
+        return 4
     except ProviderError as error:
         print(json.dumps({"error": "provider_unavailable", "detail": str(error)}, indent=2))
         if args.notify:
