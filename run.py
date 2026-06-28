@@ -228,6 +228,24 @@ def run(
                 idempotency_key=idempotency_key,
                 reason=f"{type(error).__name__}: {error}",
             )
+
+    # Graceful degradation (failure-modes.md §C "Favorite unavailable / restaurant
+    # closed" — P2): a preferred restaurant was configured but the order carted from
+    # a different one, so the favorite was closed / not available. Report it honestly.
+    if (order_result is not None and order_result.restaurant
+            and order_result.status in (OrderStatus.STOPPED_BEFORE_PAYMENT, OrderStatus.PLACED)
+            and config.preferences.favorite_restaurants):
+        preferred = config.preferences.favorite_restaurants[0]
+        carted = order_result.restaurant.strip().lower()
+        pref = preferred.strip().lower()
+        if pref and pref not in carted and carted not in pref:
+            order_result.summary["degraded_from_preferred"] = preferred
+            order_result.summary["ordered_from"] = order_result.restaurant
+            order_result.summary["degradation_reason"] = (
+                "preferred restaurant closed or unavailable — fell back to the next "
+                "available store"
+            )
+
     reached_gate = order_result is not None and order_result.status in (
         OrderStatus.PLACED, OrderStatus.STOPPED_BEFORE_PAYMENT
     )

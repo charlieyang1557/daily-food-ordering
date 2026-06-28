@@ -93,3 +93,19 @@ def test_confirmed_placement_suppresses_auto_ceiling(tmp_path):
     prov = _CaptureProvider(price=25)  # 18 < 25 <= 50 -> CONFIRM
     run(_cfg(tmp_path, auto_approve_under_usd=18), provider=prov, confirmed=True)
     assert prov.kwargs["auto_approve_ceiling_usd"] is None
+
+
+# ---- Degradation report: carted restaurant != preferred (closed favorite) -----
+
+def test_degradation_reported_when_not_from_preferred(tmp_path):
+    import yaml
+    prov = _CaptureProvider(price=12)  # discovers/carts restaurant "R" (AUTO)
+    p = tmp_path / "c.yaml"
+    p.write_text(yaml.safe_dump({
+        "budget": {"daily_max_usd": 50, "auto_approve_under_usd": 18},
+        "preferences": {"favorite_restaurants": ["Thaibodia Bistro"]},
+    }))
+    s = run(str(p), provider=prov).order_result.summary
+    assert s["degraded_from_preferred"] == "Thaibodia Bistro"
+    assert s["ordered_from"] == "R"
+    assert "closed or unavailable" in s["degradation_reason"]
