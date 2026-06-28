@@ -105,14 +105,19 @@ class Provider(Protocol):
         complete_payment: bool = False,
         budget_ceiling_usd: float | None = None,
         auto_approve_ceiling_usd: float | None = None,
+        clear_cart: bool = False,
     ) -> OrderResult:
         """Carry out an already-approved placement, stopping before payment.
 
         budget_ceiling_usd, when given, is re-checked against the real checkout
         total before success is reported (fail closed if over / unverifiable).
-        auto_approve_ceiling_usd, when given, bounds a *substituted* item's price
-        to the same AUTO band the engine approved (a pricier substitute is not
-        auto-placed; it would need a CONFIRM the engine never granted).
+        auto_approve_ceiling_usd, when given, bounds the placement to the AUTO band
+        the engine approved — re-checked against the REAL checkout total (so a
+        required-customization upcharge can't lift an AUTO'd item past the band),
+        and applied to a substitute's price too. Pass None for user-CONFIRMED
+        placements (already explicitly approved).
+        clear_cart: if True, empty a non-empty cart before ordering (destructive);
+        if False, a non-empty cart fails closed.
         """
         ...
 

@@ -57,7 +57,7 @@ class _BoomPlace:
         return [Candidate("X", "Y", 5, verified_safe=True)]
 
     def place_order(self, candidate, *, idempotency_key, complete_payment=False,
-                    budget_ceiling_usd=None, auto_approve_ceiling_usd=None):
+                    budget_ceiling_usd=None, auto_approve_ceiling_usd=None, clear_cart=False):
         raise TimeoutError("nav timeout")  # NOT a ProviderError
 
 
