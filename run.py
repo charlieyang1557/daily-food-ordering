@@ -90,6 +90,7 @@ def run(
     confirmed: bool = False,
     claim_slot: bool = False,
     slot_dir: str | Path | None = None,
+    dish: str | None = None,
 ) -> RunResult:
     # Default to the deterministic mock so a bare `run()` is always dry & safe.
     if provider is None:
@@ -154,7 +155,7 @@ def run(
     ranked_candidates = _rank_candidates(available_candidates, config)
     steps.append(_step(5, "rank_preferences", StepStatus.OK, "ranked"))
 
-    selected_candidate = _select_candidate(ranked_candidates, config)
+    selected_candidate = _select_candidate(ranked_candidates, config, preferred_dish=dish)
     selection_detail = selected_candidate.item_name if selected_candidate else "none"
     steps.append(_step(6, "select_price", StepStatus.OK, selection_detail))
 
@@ -362,7 +363,18 @@ def _try_fallback(provider: Provider, config: UserConfig) -> Candidate | None:
     return _select_candidate(ranked, config)
 
 
-def _select_candidate(candidates: list[Candidate], config: UserConfig) -> Candidate | None:
+def _select_candidate(
+    candidates: list[Candidate], config: UserConfig, *, preferred_dish: str | None = None
+) -> Candidate | None:
+    # A specific dish was requested (e.g. a demo ordering "Pad Thai"): evaluate the
+    # matching candidate by name, so the user's actual choice is checked — and, if
+    # unsafe, refused — instead of the cheapest. Falls back to normal selection if
+    # no candidate matches.
+    if preferred_dish:
+        needle = preferred_dish.strip().lower()
+        matches = [c for c in candidates if needle in c.item_name.strip().lower()]
+        if matches:
+            candidates = matches
     in_budget = [
         candidate
         for candidate in candidates
@@ -439,6 +451,8 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help="mock-only: which candidate set to return",
     )
     parser.add_argument("--query", default=None, help="doordash: search term (cuisine/restaurant)")
+    parser.add_argument("--dish", default=None,
+                        help="order a SPECIFIC named dish (by name match) instead of the auto-pick")
     parser.add_argument("--profile", default=None, help="doordash: persistent browser profile dir")
     parser.add_argument("--headless", action="store_true", help="doordash: run headless (usually bot-walled)")
     parser.add_argument(
@@ -488,6 +502,7 @@ def main(argv: list[str] | None = None) -> int:
         DoorDashProvider(profile_dir=args.profile).login()
         return 0
 
+    provider = None
     try:
         provider = _build_provider(args)
         result = run(
@@ -496,6 +511,7 @@ def main(argv: list[str] | None = None) -> int:
             complete_payment=args.complete_payment,
             confirmed=args.confirmed,
             claim_slot=args.claim_slot,
+            dish=args.dish,
         )
     except ConfigError as error:
         print(json.dumps({"error": "config_invalid", "detail": str(error)}, indent=2))
@@ -506,6 +522,15 @@ def main(argv: list[str] | None = None) -> int:
             _post_notify("⚠️ Daily Food Ordering — DoorDash unavailable (bot wall / login). "
                          "Re-run `--login`. Nothing ordered.")
         return 3
+    finally:
+        # Tear down any browser session the provider held open across
+        # discover() -> place_order() (DoorDash). Mock providers have no close().
+        _close = getattr(provider, "close", None)
+        if callable(_close):
+            try:
+                _close()
+            except Exception:  # noqa: BLE001
+                pass
 
     print(json.dumps(result.to_dict(), indent=2))
     if args.notify:

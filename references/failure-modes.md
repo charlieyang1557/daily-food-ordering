@@ -34,11 +34,17 @@ Every failure runs one path: **detect → classify severity → resolve → noti
 ## C · Discovery / selection
 | mode | severity | resolve |
 |---|---|---|
-| No restaurant open | P2 | try fallback → skip if none → BLOCK + notify |
+| No restaurant open / nothing orderable | P0* | try fallback (→ CONFIRM `fallback_in_use`) → else **BLOCK `no_candidate`** + notify |
 | Preferred cuisine unavailable | P2 | degrade through ranked cuisines → fallback → skip |
 | **No compliant / safe option** | **P0** | safety-checked fallback → **BLOCK + loud notify** if none. **NEVER relax** |
 | Favorite unavailable | P2 | next-best → fallback |
-| Can't verify dietary compliance | P0 | mark uncertain → dropped in v1 (filtered, never silently kept) |
+| Can't verify dietary compliance | P0 | mark uncertain → dropped in v1 (`unverified_safety`, filtered, never silently kept) |
+| Item flagged unavailable (reaches decide) | P2 | `unavailable` — but run.py filters these pre-decision, so the reachable empty-set outcome is `no_candidate` (P0) |
+
+\* The engine emits an empty selection as **`no_candidate` (P0)** — it can't
+distinguish "nothing open" (inconvenience) from "nothing *safe*" (P0), so it
+**fails safe** at P0 rather than under-warning. With a fallback it's rescued to
+CONFIRM `fallback_in_use` (P1) instead.
 
 ## D · Budget / decision
 | mode | severity | resolve |
@@ -76,3 +82,26 @@ Emily's config loads with three flaws; all caught at **Stage A**, run halts, not
 - `never_order: [cilantro]` → ingredient, not restaurant/cuisine → reclassify as a soft dislike
 
 Result: one message naming all three fixes; places nothing.
+
+## Demo cases (verified against the engine)
+
+The `order my daily food demo fail N` triggers (SKILL.md) each exercise one row
+above. **Expected** is the engine's verified emitted `(decision, reason, severity)` —
+the demo, the engine, and this taxonomy all agree.
+
+| Trigger | mode · config | § | Engine emits |
+|---|---|---|---|
+| fail 1 | 🌐 LIVE · doordash + `over-budget-live.yaml` (daily_max $5) | D | **BLOCK** `over_daily_max` (P1) |
+| fail 2 | 🌐 LIVE · doordash + `over-auto-live.yaml` (auto $5 / max $50) | D | **CONFIRM** `above_auto_approve` (P1) |
+| fail 3 | 🌐 LIVE · doordash + `charlie-no-fallback.yaml` (restricted) | C | **BLOCK** `unverified_safety` (P0) |
+| fail 4 | 🌐 LIVE · doordash `--dish "pad thai"` at Thai Recipe (card declares peanuts) | C | **BLOCK** `allergy_violation` (P0) |
+| fail 5 | mock · `allergen` + trusted config (Chipotle fallback) | C | **CONFIRM** `fallback_in_use` (P1) |
+| fail 6 | config load · `demo/invalid.yaml` | A | exit 2 `config_invalid` |
+
+fail 1–4 run **live** on DoorDash (the browser opens, real discovery → decision).
+fail 4 targets a dish whose card *declares* an allergen (Pad Thai → peanuts) with
+`--dish`, so the engine emits a precise `allergy_violation` rather than the generic
+`unverified_safety`. Only fail 5 (fallback rescue) uses the **mock** provider —
+a *verified-safe* fallback can't come from a platform we never trust for safety.
+fail 6 fails at config load (no browser). `order my daily food` (no `fail N`) is the
+live run that carts a dish and stops before pay.
