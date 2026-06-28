@@ -55,11 +55,11 @@ carted: <dish>  | checkout_total_usd: <real total> | screenshot: ~/.daily-food-o
 ```
 
 Notes:
-- The adapter **clears any leftover cart items first** (it orders one daily meal),
-  so the checkout total reflects only today's item and cart verification can't
-  trip on a stale leftover (e.g. a drink from a prior run). The number removed is
-  reported in `summary.cleared_cart_items`. (The total is still reconciled against
-  `daily_max`, failing closed if over.)
+- A non-empty cart **fails closed** by default (clearing the user's real cart is
+  destructive). Pass **`--clear-cart`** to let the run empty it first (the demo
+  commands do); the number removed is reported in `summary.cleared_cart_items`.
+  Either way the checkout total is reconciled against `daily_max`, failing closed
+  if over.
 - The adapter finds the approved dish by **scrolling and scanning the menu**
   (matched by name) and auto-completes its required customization (any number of
   "select 1" groups). Only if it genuinely can't add that dish does it

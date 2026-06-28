@@ -140,6 +140,16 @@ _ALLERGEN_KEYWORDS: dict[str, tuple[str, ...]] = {
 }
 
 
+def _kw_match(blob: str, keywords: tuple[str, ...]) -> bool:
+    """Whole-word keyword match (with optional trailing 's'), so a keyword can't
+    substring-hit an unrelated word: 'crab' must not match 'crabapple', 'flan' not
+    'flank', 'scallop' not 'scalloped'. (A keyword that is itself a real word in a
+    savory dish — 'beer'-battered — is an inherent, rare limit of keyword filters.)
+    """
+    b = (blob or "").lower()
+    return any(re.search(rf"\b{re.escape(k)}s?\b", b) for k in keywords)
+
+
 class DoorDashProvider:
     name = "doordash"
 
@@ -199,20 +209,18 @@ class DoorDashProvider:
 
     @staticmethod
     def _looks_like_drink(name: str) -> bool:
-        n = (name or "").lower()
-        return any(k in n for k in _DRINK_KEYWORDS)
+        return _kw_match(name, _DRINK_KEYWORDS)
 
     @staticmethod
     def _looks_like_dessert(name: str) -> bool:
-        n = (name or "").lower()
-        return any(k in n for k in _DESSERT_KEYWORDS)
+        return _kw_match(name, _DESSERT_KEYWORDS)
 
     @staticmethod
     def _parse_allergens(text: str) -> list[str]:
         """Allergens DECLARED in a menu item's text. Trusted only to REFUSE (a
-        positive 'contains peanut' signal); never to mark an item safe."""
-        blob = (text or "").lower()
-        return [a for a, kws in _ALLERGEN_KEYWORDS.items() if any(k in blob for k in kws)]
+        positive 'contains peanut' signal); never to mark an item safe. Whole-word
+        match so 'crab' won't false-positive on 'crabapple'."""
+        return [a for a, kws in _ALLERGEN_KEYWORDS.items() if _kw_match(text, kws)]
 
     @staticmethod
     def _menu_item_name(text: str) -> str:
@@ -496,6 +504,7 @@ class DoorDashProvider:
         complete_payment: bool = False,
         budget_ceiling_usd: float | None = None,
         auto_approve_ceiling_usd: float | None = None,
+        clear_cart: bool = False,
     ) -> OrderResult:
         store_url = candidate.metadata.get("url") if candidate.metadata else None
         # Only ever navigate to doordash.com — never an attacker-crafted URL.
@@ -511,16 +520,27 @@ class DoorDashProvider:
             page.goto(store_url, wait_until="domcontentloaded")
             self._guard_page(page)
 
-        # Start clean: empty any leftover cart items FIRST, so the checkout
-        # total reflects only today's single meal and cart verification can't
-        # trip on a stale item (e.g. a drink left from a prior run). Recorded
-        # in the summary for honesty.
-        cleared_items = self._clear_cart(page)
-        # Clearing navigates into the cart view, which drops the store-menu DOM;
-        # reload the store so the menu is present (and clean) for the add.
-        if cleared_items:
+        # Cart hygiene. The cart is the user's REAL DoorDash cart — clearing it is
+        # destructive and not transactional, so it is OPT-IN (run.py --clear-cart).
+        # Default: fail closed on a non-empty cart rather than silently wipe items
+        # this run didn't create. With clear_cart, empty it then reload the store
+        # (clearing navigates into the cart view, dropping the menu DOM).
+        existing = self._cart_count(page)
+        if existing > 0 and not clear_cart:
+            return OrderResult(
+                status=OrderStatus.FAILED, provider=self.name,
+                restaurant=candidate.restaurant, item_name=candidate.item_name,
+                price_usd=candidate.price_usd, idempotency_key=idempotency_key,
+                reason=f"cart_not_empty: {existing} item(s) already in cart; empty it "
+                       f"or pass --clear-cart to let the run clear it",
+                charged=False, summary={"existing_cart_items": existing},
+            )
+        cleared_items = 0
+        if existing > 0:
+            cleared_items = self._clear_cart(page)
             page.goto(store_url, wait_until="domcontentloaded")
-            page.wait_for_timeout(2000)
+            self._guard_page(page)  # honest bot-wall path if the reload trips Cloudflare
+            page.wait_for_timeout(1500)
 
         # Cart the approved item, or the cheapest item that adds without
         # required customization. Report what was ACTUALLY carted.
@@ -580,6 +600,24 @@ class DoorDashProvider:
                 price_usd=carted.price_usd, idempotency_key=idempotency_key,
                 reason="cart_unverified: carted item not confirmed at checkout",
                 charged=False, summary=summary, screenshot_path=screenshot_path,
+            )
+
+        # Auto-approve authority is bounded by the REAL checkout total, not the
+        # listed price: required-customization upcharges (modal auto-selections)
+        # can lift an AUTO'd item above the band it was approved under. Re-check
+        # the real total for the approved item too — not just substitutes. run.py
+        # passes None here for user-CONFIRMED placements (the user already said yes).
+        if (auto_approve_ceiling_usd is not None and total is not None
+                and total > auto_approve_ceiling_usd):
+            return OrderResult(
+                status=OrderStatus.BLOCKED, provider=self.name,
+                restaurant=carted.restaurant, item_name=carted.item_name,
+                price_usd=total, idempotency_key=idempotency_key,
+                reason=f"checkout_total_above_auto_approve:{total}>{auto_approve_ceiling_usd}",
+                charged=False,
+                summary={**summary, "checkout_total_usd": total,
+                         "auto_approve_ceiling_usd": auto_approve_ceiling_usd},
+                screenshot_path=screenshot_path,
             )
 
         failed = self._reconcile_budget(
@@ -934,18 +972,27 @@ class DoorDashProvider:
                 "not claiming a stop-before-pay"
             )
 
+    @staticmethod
+    def _verify_needles(item_name: str) -> list[str]:
+        """Text fragments that confirm a dish is at checkout: the FULL dish name
+        (menu code stripped) and a long prefix — NEVER single generic words. A lone
+        'Thai'/'Pad' substring-matches page chrome like the store name 'Thaibodia',
+        which would falsely confirm an item that is not actually in the cart.
+        """
+        core = re.sub(r"^[A-Za-z]{0,3}\d+[A-Za-z]?[.\)]?\s*[-–]?\s*", "", item_name or "").strip()
+        if len(core) < 4:
+            core = (item_name or "").strip()  # very short name -> use the full listed name
+        needles = [core]
+        if len(core) >= 18:
+            needles.append(core[:18])
+        return [n for n in needles if len(n) >= 4]
+
     def _verify_cart(self, page: Any, candidate: Candidate) -> bool:
-        # Best-effort confirmation that the carted item shows at checkout. We
-        # strip a leading menu code ("A10 - ", "33 - ") and try the dish-name
-        # prefix, then its last word. This is informational, not fatal: we never
-        # pay, and the real total is reconciled against budget downstream.
-        core = re.sub(r"^[A-Za-z]{0,3}\d+[A-Za-z]?[.\)]?\s*[-–]?\s*", "", candidate.item_name).strip()
-        words = core.split()
-        needles = [core[:14], words[-1] if words else "", words[0] if words else ""]
-        for needle in needles:
-            needle = (needle or "").strip()
-            if len(needle) < 3:
-                continue
+        # FAIL-CLOSED confirmation that the carted item shows at checkout. Match the
+        # FULL dish name only — single words substring-match the store name in page
+        # chrome (a lone "Thai" hits "Thaibodia"), which would falsely confirm an
+        # item that never carted. If we can't confirm, place_order returns FAILED.
+        for needle in self._verify_needles(candidate.item_name):
             try:
                 if page.get_by_text(needle, exact=False).count() > 0:
                     return True

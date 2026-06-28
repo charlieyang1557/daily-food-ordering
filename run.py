@@ -91,6 +91,7 @@ def run(
     claim_slot: bool = False,
     slot_dir: str | Path | None = None,
     dish: str | None = None,
+    clear_cart: bool = False,
 ) -> RunResult:
     # Default to the deterministic mock so a bare `run()` is always dry & safe.
     if provider is None:
@@ -197,7 +198,14 @@ def run(
                 idempotency_key=idempotency_key,
                 complete_payment=complete_payment,
                 budget_ceiling_usd=config.budget.daily_max_usd,
-                auto_approve_ceiling_usd=config.budget.auto_approve_under_usd,
+                # Enforce the auto-approve ceiling against the REAL checkout total
+                # only for AUTO placements; a user-CONFIRMED order (--confirmed on a
+                # CONFIRM) was already explicitly approved above the auto band.
+                auto_approve_ceiling_usd=(
+                    config.budget.auto_approve_under_usd
+                    if decision.status is DecisionStatus.AUTO else None
+                ),
+                clear_cart=clear_cart,
             )
             # STOPPED_BEFORE_PAYMENT is "carted, not paid" — NOT a placed order:
             # it neither sets `placed` nor consumes the daily slot. Only a real
@@ -373,8 +381,13 @@ def _select_candidate(
     if preferred_dish:
         needle = preferred_dish.strip().lower()
         matches = [c for c in candidates if needle in c.item_name.strip().lower()]
-        if matches:
-            candidates = matches
+        if not matches:
+            # The explicitly-requested dish was not discovered (lazy-load, filter,
+            # or selector drift). Fail CLOSED — return no candidate so the engine
+            # BLOCKs (no_candidate) — rather than silently order a different dish
+            # than the one the user named.
+            return None
+        candidates = matches
     in_budget = [
         candidate
         for candidate in candidates
@@ -453,6 +466,9 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--query", default=None, help="doordash: search term (cuisine/restaurant)")
     parser.add_argument("--dish", default=None,
                         help="order a SPECIFIC named dish (by name match) instead of the auto-pick")
+    parser.add_argument("--clear-cart", action="store_true",
+                        help="doordash: clear a non-empty cart before ordering (DESTRUCTIVE to "
+                             "existing cart items). Without it, a non-empty cart fails closed.")
     parser.add_argument("--profile", default=None, help="doordash: persistent browser profile dir")
     parser.add_argument("--headless", action="store_true", help="doordash: run headless (usually bot-walled)")
     parser.add_argument(
@@ -512,6 +528,7 @@ def main(argv: list[str] | None = None) -> int:
             confirmed=args.confirmed,
             claim_slot=args.claim_slot,
             dish=args.dish,
+            clear_cart=args.clear_cart,
         )
     except ConfigError as error:
         print(json.dumps({"error": "config_invalid", "detail": str(error)}, indent=2))

@@ -76,9 +76,9 @@ Never use mock to fulfill a real order.
 
 | User says | Command (prefix with the interpreter) | Expected — engine output · `failure-modes.md` § |
 |-----------|----------------------------------------|----------|
-| `order my daily food` | `run.py --provider doordash --claim-slot --config demo/charlie-unrestricted.yaml` | **LIVE** — carts the chosen dish, **STOPS before pay**, no charge |
+| `order my daily food` | `run.py --provider doordash --claim-slot --clear-cart --config demo/charlie-unrestricted.yaml` | **LIVE** — carts the chosen dish, **STOPS before pay**, no charge |
 | `order my daily food demo fail 1` | `run.py --provider doordash --query thai --config demo/over-budget-live.yaml` | 🌐 **LIVE BLOCK `over_daily_max`** (P1) — browses the real menu; every dish over the $5 cap · **§D** |
-| `order my daily food demo fail 2` | `run.py --provider doordash --query thai --config demo/over-auto-live.yaml` | 🌐 **LIVE CONFIRM `above_auto_approve`** (P1) — real ~$18 dish over the $5 auto-approve, asks first · **§D** |
+| `order my daily food demo fail 2` | `run.py --provider doordash --query thai --clear-cart --config demo/over-auto-live.yaml` | 🌐 **LIVE CONFIRM `above_auto_approve`** (P1) — real ~$18 dish over the $5 auto-approve, asks first · **§D** |
 | `order my daily food demo fail 3` | `run.py --provider doordash --query thai --config demo/charlie-no-fallback.yaml` | 🌐 **LIVE BLOCK `unverified_safety`** (P0) — restricted user; DoorDash can't prove a dish is peanut-free · **§C** |
 | `order my daily food demo fail 4` | `run.py --provider doordash --query "thai recipe" --dish "pad thai" --config demo/charlie-no-fallback.yaml` | 🌐 **LIVE BLOCK `allergy_violation`** (P0) — orders Pad Thai at Thai Recipe Cuisine; its card declares peanuts → refused · **§C** |
 | `order my daily food demo fail 5` | `run.py --provider mock --scenario allergen --config demo/charlie-trusted.yaml` | **CONFIRM `fallback_in_use`** (P1, mock) — rescued to the safe Chipotle fallback (live fallback is also unverifiable) · **§C** |

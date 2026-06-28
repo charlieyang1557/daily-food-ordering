@@ -89,7 +89,7 @@ class _StopProvider:
         return [Candidate("Real Store", "Real Dish", 12, verified_safe=True)]
 
     def place_order(self, candidate, *, idempotency_key, complete_payment=False,
-                    budget_ceiling_usd=None, auto_approve_ceiling_usd=None):
+                    budget_ceiling_usd=None, auto_approve_ceiling_usd=None, clear_cart=False):
         return OrderResult(
             status=OrderStatus.STOPPED_BEFORE_PAYMENT, provider="stop",
             restaurant=candidate.restaurant, item_name=candidate.item_name,
