@@ -43,6 +43,16 @@ class ProviderUnavailable(ProviderError):
     """
 
 
+class ProviderBusy(ProviderError):
+    """Another live run already holds the shared browser profile.
+
+    Two concurrent DoorDash runs would collide on the persistent Chrome profile
+    and time out opaquely. This fails fast with a clear message so live demos are
+    run one at a time. Distinct from ProviderUnavailable: the fix is "wait / run
+    sequentially", not "re-login".
+    """
+
+
 @dataclass(frozen=True)
 class OrderResult:
     """Structured outcome of place_order — the receipt the run loop records.
@@ -126,6 +136,7 @@ __all__ = [
     "OrderResult",
     "OrderStatus",
     "Provider",
+    "ProviderBusy",
     "ProviderError",
     "ProviderUnavailable",
 ]

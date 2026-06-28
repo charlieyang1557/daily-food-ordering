@@ -159,3 +159,52 @@ def test_clear_cart_strict_boolean():
     assert load_config_from_dict(base).clear_cart is False
     with pytest.raises(ConfigError):
         load_config_from_dict({**base, "clear_cart": "maybe"})
+
+
+# ---- Fix: profile lock — refuse a 2nd concurrent live run on the same profile --
+
+def test_profile_lock_blocks_concurrent_live_run(tmp_path):
+    import pytest
+    from providers.base import ProviderBusy
+    from providers.doordash import DoorDashProvider
+
+    prof = str(tmp_path / "chrome-profile")
+    holder = DoorDashProvider(profile_dir=prof)
+    intruder = DoorDashProvider(profile_dir=prof)
+    holder._acquire_profile_lock()
+    try:
+        with pytest.raises(ProviderBusy):
+            intruder._acquire_profile_lock()      # same profile is in use -> busy
+    finally:
+        holder.close()                            # releases the advisory flock
+    intruder._acquire_profile_lock()              # now free -> a new run may proceed
+    intruder.close()
+
+
+def test_profile_lock_distinct_profiles_do_not_collide(tmp_path):
+    from providers.doordash import DoorDashProvider
+
+    a = DoorDashProvider(profile_dir=str(tmp_path / "a"))
+    b = DoorDashProvider(profile_dir=str(tmp_path / "b"))
+    a._acquire_profile_lock()
+    b._acquire_profile_lock()                     # different profile -> no conflict
+    a.close()
+    b.close()
+
+
+def test_login_refuses_when_profile_locked(tmp_path):
+    # Review gap: login()/diagnose() open the SAME profile and must take the lock
+    # too, so warming the profile during a live run fails fast (before launching
+    # Chrome) instead of colliding opaquely.
+    import pytest
+    from providers.base import ProviderBusy
+    from providers.doordash import DoorDashProvider
+
+    prof = str(tmp_path / "chrome-profile")
+    holder = DoorDashProvider(profile_dir=prof)
+    holder._acquire_profile_lock()
+    try:
+        with pytest.raises(ProviderBusy):
+            DoorDashProvider(profile_dir=prof).login()   # blocked before any browser
+    finally:
+        holder.close()

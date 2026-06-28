@@ -29,7 +29,7 @@ from typing import Any
 from urllib.parse import quote
 
 from engine.models import Candidate, UserConfig
-from providers.base import OrderResult, OrderStatus, ProviderUnavailable
+from providers.base import OrderResult, OrderStatus, ProviderBusy, ProviderUnavailable
 
 BASE_URL = "https://www.doordash.com"
 
@@ -177,6 +177,7 @@ class DoorDashProvider:
         self._pw: Any | None = None
         self._ctx: Any | None = None
         self._page: Any | None = None
+        self._lock_fh: Any | None = None  # holds the exclusive profile lock
 
     # ---- pure, browser-free logic (unit-tested) --------------------------------
 
@@ -328,10 +329,50 @@ class DoorDashProvider:
         page.set_default_timeout(self.timeout_ms)
         return page
 
+    def _acquire_profile_lock(self) -> None:
+        """Refuse to launch a second browser run while another holds this profile.
+
+        fcntl.flock is advisory and auto-released by the OS when the process exits
+        (even on crash) — so there is no stale lock to reap. Keyed on the profile
+        dir (the actually-shared resource), so distinct profiles never collide.
+        Every path that opens the persistent profile (discover/place_order via
+        _session_page, plus login/diagnose) acquires this, so the busy-detection
+        covers run-vs-run AND login-vs-run. Assumes a LOCAL filesystem: flock is a
+        no-op on some network mounts (NFS/SMB), so a profile on such a mount would
+        defeat the guard — the default ~/.daily-food-ordering profile is local.
+        """
+        if self._lock_fh is not None:
+            return
+        import fcntl
+
+        self.profile_dir.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = self.profile_dir.parent / (self.profile_dir.name + ".lock")
+        handle = open(lock_path, "w")  # noqa: SIM115 — held for the run's lifetime
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (BlockingIOError, OSError):
+            handle.close()
+            raise ProviderBusy(
+                "another live DoorDash run is already using the browser profile "
+                f"({self.profile_dir}) — run the demos one at a time."
+            )
+        self._lock_fh = handle
+
+    def _release_profile_lock(self) -> None:
+        """Release the advisory profile lock (idempotent; never raises). Closing the
+        handle releases the flock; the OS would too on process exit."""
+        handle, self._lock_fh = self._lock_fh, None
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:  # noqa: BLE001
+                pass
+
     def _session_page(self) -> Any:
         """The one shared, lazily-opened page reused across discover/place_order."""
         if self._page is not None:
             return self._page
+        self._acquire_profile_lock()  # fail fast & clearly if a run is already live
         from playwright.sync_api import sync_playwright
 
         self._pw = sync_playwright().start()
@@ -350,6 +391,9 @@ class DoorDashProvider:
             except Exception:  # noqa: BLE001
                 pass
         self._pw = self._ctx = self._page = None
+        # Release the profile lock LAST — only once the browser has fully torn down,
+        # so a waiting run can't pass the flock while Chrome still holds the profile.
+        self._release_profile_lock()
 
     def _guard_page(self, page: Any) -> None:
         page.wait_for_timeout(2500)
@@ -397,58 +441,66 @@ class DoorDashProvider:
         print("  1) pass any 'verify you are human' check")
         print("  2) sign in to your DoorDash account")
         print("  3) set your delivery address")
-        with sync_playwright() as p:
-            self.headless = False
-            context = self._launch(p)
-            try:
-                page = self._new_page(context)
+        self._acquire_profile_lock()  # never collide with a live order on this profile
+        try:
+            with sync_playwright() as p:
+                self.headless = False
+                context = self._launch(p)
                 try:
-                    page.goto(BASE_URL, wait_until="domcontentloaded")
-                except Exception as error:  # noqa: BLE001
-                    print(f"(navigation note: {error})")
-                if sys.stdin and sys.stdin.isatty():
+                    page = self._new_page(context)
                     try:
-                        input("\n>> Finished signing in? Press Enter here to save & close... ")
-                    except (EOFError, KeyboardInterrupt):
+                        page.goto(BASE_URL, wait_until="domcontentloaded")
+                    except Exception as error:  # noqa: BLE001
+                        print(f"(navigation note: {error})")
+                    if sys.stdin and sys.stdin.isatty():
+                        try:
+                            input("\n>> Finished signing in? Press Enter here to save & close... ")
+                        except (EOFError, KeyboardInterrupt):
+                            pass
+                    else:
+                        print("(stdin not interactive — waiting up to 5 min for a logged-in marker)")
+                        for _ in range(60):
+                            page.wait_for_timeout(5000)
+                            if self._first_locator(page, "logged_in_marker"):
+                                break
+                    try:
+                        page.goto(f"{BASE_URL}/home", wait_until="domcontentloaded")
+                        page.wait_for_timeout(3000)
+                    except Exception:  # noqa: BLE001
                         pass
-                else:
-                    print("(stdin not interactive — waiting up to 5 min for a logged-in marker)")
-                    for _ in range(60):
-                        page.wait_for_timeout(5000)
-                        if self._first_locator(page, "logged_in_marker"):
-                            break
-                try:
-                    page.goto(f"{BASE_URL}/home", wait_until="domcontentloaded")
-                    page.wait_for_timeout(3000)
-                except Exception:  # noqa: BLE001
-                    pass
-                if self._first_locator(page, "logged_in_marker"):
-                    print("Logged-in marker detected — session looks good.")
-                else:
-                    print("No logged-in marker detected. The profile is still saved; "
-                          "if a later run reports 'not logged in', re-run --login.")
-            finally:
-                try:
-                    context.close()
-                except Exception:  # noqa: BLE001
-                    pass
+                    if self._first_locator(page, "logged_in_marker"):
+                        print("Logged-in marker detected — session looks good.")
+                    else:
+                        print("No logged-in marker detected. The profile is still saved; "
+                              "if a later run reports 'not logged in', re-run --login.")
+                finally:
+                    try:
+                        context.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+        finally:
+            self._release_profile_lock()
         print(f"Profile saved at: {self.profile_dir}")
 
     def diagnose(self, url: str = BASE_URL) -> dict[str, Any]:
         from playwright.sync_api import sync_playwright
 
         out: dict[str, Any] = {"url": url}
-        with sync_playwright() as p:
-            context = self._launch(p)
-            try:
-                page = self._new_page(context)
-                page.goto(url, wait_until="domcontentloaded")
-                page.wait_for_timeout(3000)
-                out["title"] = page.title()
-                out["bot_walled"] = self.is_bot_walled(page.title(), page.inner_text("body")[:2000])
-                out["selector_hits"] = {k: bool(self._first_locator(page, k)) for k in SELECTORS}
-            finally:
-                context.close()
+        self._acquire_profile_lock()
+        try:
+            with sync_playwright() as p:
+                context = self._launch(p)
+                try:
+                    page = self._new_page(context)
+                    page.goto(url, wait_until="domcontentloaded")
+                    page.wait_for_timeout(3000)
+                    out["title"] = page.title()
+                    out["bot_walled"] = self.is_bot_walled(page.title(), page.inner_text("body")[:2000])
+                    out["selector_hits"] = {k: bool(self._first_locator(page, k)) for k in SELECTORS}
+                finally:
+                    context.close()
+        finally:
+            self._release_profile_lock()
         return out
 
     def discover(self, config: UserConfig, *, query: str | None = None) -> list[Candidate]:
