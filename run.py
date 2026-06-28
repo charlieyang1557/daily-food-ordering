@@ -83,6 +83,28 @@ class RunResult:
         }
 
 
+def _norm_store(name: str) -> str:
+    """Fold a restaurant name to a comparable form: lowercase, '&'→'and', and every
+    non-alphanumeric run to a single space (so "McDonald's" == "McDonalds")."""
+    s = (name or "").lower().replace("&", " and ")
+    s = "".join(c if (c.isalnum() or c == " ") else " " for c in s)
+    return " ".join(s.split())
+
+
+def _store_matches(a_norm: str, b_norm: str) -> bool:
+    """Whether two ALREADY-normalized store names refer to the same store: equal, or a
+    MULTI-word name that is a full token-subset of the other ("Thaibodia Bistro" ⊆
+    "Thaibodia Bistro Milpitas"). A bare 1-word name must NOT swallow a different store
+    ("Pho" vs "Pho Newark")."""
+    if not a_norm or not b_norm:
+        return False
+    if a_norm == b_norm:
+        return True
+    short, long_ = (a_norm, b_norm) if len(a_norm) <= len(b_norm) else (b_norm, a_norm)
+    st, lt = set(short.split()), set(long_.split())
+    return len(st) >= 2 and st <= lt
+
+
 def run(
     config_path: str | Path = "user_preferences.yaml",
     *,
@@ -241,29 +263,12 @@ def run(
             and order_result.status in (OrderStatus.STOPPED_BEFORE_PAYMENT, OrderStatus.PLACED)
             and getattr(provider, "name", "") == "doordash"
             and config.preferences.favorite_restaurants):
-        def _norm(name: str) -> str:
-            s = (name or "").lower().replace("&", " and ")
-            s = "".join(c if (c.isalnum() or c == " ") else " " for c in s)
-            return " ".join(s.split())
-
-        def _same(a: str, b: str) -> bool:
-            na, nb = _norm(a), _norm(b)
-            if not na or not nb:
-                return False
-            if na == nb:  # equal after punctuation-normalization (McDonald's==McDonalds)
-                return True
-            # A MULTI-word favorite that is a full token-subset of the carted name
-            # (e.g. "Thaibodia Bistro" within "Thaibodia Bistro Milpitas"). A bare
-            # 1-word favorite ("Pho") must NOT swallow a different store ("Pho Newark").
-            short, long_ = (na, nb) if len(na) <= len(nb) else (nb, na)
-            st, lt = set(short.split()), set(long_.split())
-            return len(st) >= 2 and st <= lt
-
         carted = order_result.restaurant
+        carted_norm = _norm_store(carted)  # invariant across the loop — normalize once
         known = list(config.preferences.favorite_restaurants)
         if config.fallback.restaurant:
             known.append(config.fallback.restaurant)
-        if not any(_same(carted, store) for store in known):
+        if not any(_store_matches(carted_norm, _norm_store(store)) for store in known):
             order_result.summary["degraded_from_preferred"] = config.preferences.favorite_restaurants[0]
             order_result.summary["ordered_from"] = carted
             order_result.summary["degradation_reason"] = (
