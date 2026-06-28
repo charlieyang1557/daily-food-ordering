@@ -111,9 +111,15 @@ _DOLLAR_RE = re.compile(r"\$\s*(\d[\d,]*(?:\.\d+)?)")
 _PRICE_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)")
 _FREE_TOKENS = {"free", "free item", "$0", "$0.00"}
 
-# When the approved dish genuinely can't be added, a substitute must still be a
-# MEAL — never a soda/side. Items priced below this floor are skipped as substitutes.
-_SUBSTITUTE_PRICE_FLOOR_USD = 8.0
+# A daily order must be an actual MEAL — never a soda/side. Items priced below
+# this floor (or that look like drinks) are dropped from DISCOVERY and skipped as
+# substitutes, so the engine's cheapest-candidate pick can't land on a $3 Coke.
+_MEAL_PRICE_FLOOR_USD = 8.0
+_DRINK_KEYWORDS = (
+    "coke", "cola", "pepsi", "sprite", "soda", "lemonade", "thai tea", "iced tea",
+    "milk tea", "boba", "juice", "soft drink", "bottled water", "coffee", "latte",
+    "smoothie", "beer", "wine", "sake",
+)
 
 # Allergens DECLARED in a menu item's visible text (name + description). A
 # positive declaration is trusted ONLY in the safe direction — to REFUSE the item;
@@ -182,6 +188,11 @@ class DoorDashProvider:
             return 0.0
         match = _PRICE_RE.search(text)
         return float(match.group(1).replace(",", "")) if match else None
+
+    @staticmethod
+    def _looks_like_drink(name: str) -> bool:
+        n = (name or "").lower()
+        return any(k in n for k in _DRINK_KEYWORDS)
 
     @staticmethod
     def _parse_allergens(text: str) -> list[str]:
@@ -612,6 +623,10 @@ class DoorDashProvider:
             except Exception:  # noqa: BLE001
                 continue
             name = self._menu_item_name(text)
+            # Daily order = an actual dish. Drop drinks and sub-meal-priced items
+            # so the engine's cheapest-candidate pick can't land on a $3 soda.
+            if price < _MEAL_PRICE_FLOOR_USD or self._looks_like_drink(name):
+                continue
             key = (name.lower(), price)
             if not name or key in seen:
                 continue
@@ -751,7 +766,7 @@ class DoorDashProvider:
             except Exception:  # noqa: BLE001
                 continue
             price = self.parse_price(text)
-            if price is None or price < _SUBSTITUTE_PRICE_FLOOR_USD:
+            if price is None or price < _MEAL_PRICE_FLOOR_USD:
                 continue
             if items.nth(i).locator("[data-testid='quick-add-button']").count() == 0:
                 continue
