@@ -9,6 +9,11 @@ budget:
   auto_approve_under_usd: 80
 preferences:
   cuisines: [Thai]
+  # Pin the live walkthrough to a known-good store. discover() uses the first
+  # favorite as its search query, so the demo lands on the SAME restaurant whose
+  # add-to-cart flow is verified (radio-only modals), instead of a random Thai
+  # store each run (some have modal layouts the unattended add can't complete).
+  favorite_restaurants: ["Thaibodia Bistro"]
 notifications:
   channel: "discord"
   confirmation_timeout_minutes: 20
