@@ -899,7 +899,12 @@ class DoorDashProvider:
             # leaving a required group unsatisfied and forcing a substitution).
             selected = False
             try:
-                radio.evaluate("el => el.click()")
+                # focus({preventScroll:true}) keeps the modal from jumping to each
+                # option as it's clicked — a JS click works on an off-screen radio,
+                # so we never need to scroll it into view. Smooth, not janky.
+                radio.evaluate(
+                    "el => { try { el.focus({preventScroll: true}); } catch (e) {} el.click(); }"
+                )
                 selected = True
             except Exception:  # noqa: BLE001
                 pass
@@ -911,7 +916,7 @@ class DoorDashProvider:
                     target.click(force=True, timeout=3500)
                 except Exception:  # noqa: BLE001
                     pass
-            page.wait_for_timeout(500)
+            page.wait_for_timeout(350)
         return False
 
     def _close_modal(self, page: Any) -> None:
