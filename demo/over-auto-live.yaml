@@ -7,3 +7,6 @@ budget:
   auto_approve_under_usd: 5
 preferences:
   cuisines: [Thai]
+  # Pin to the verified store: fail 2 is the one fail-case that CARTS (on "yes"),
+  # so it must land on the known-good restaurant, not a random Thai store.
+  favorite_restaurants: ["Thaibodia Bistro"]
