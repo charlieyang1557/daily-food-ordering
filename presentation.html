@@ -273,7 +273,7 @@
   <div class="wrap hero-inner">
     <div class="kicker reveal in">Take-Home Assignment · Trust &amp; Safety Dossier</div>
     <h1 class="reveal in d1">Daily Food Ordering <span class="soft">Agent Skill</span></h1>
-    <p class="thesis reveal in d2">An agent that orders a meal a day, unattended, with someone's money — <b>safely</b>. The model may rank and phrase; <b>safety, budget, and final authority live in code.</b></p>
+    <p class="thesis reveal in d2">An agent that orders a meal a day, unattended, with someone's money — <b>safely</b>. The model may rank and phrase; <b>safety, budget, and final authority live in code.</b> Now wired to <b>real DoorDash</b>: it browses the live menu, carts the dish, and <b>hard-stops before payment</b> — <span class="mono" style="font-size:.84rem">charged: false</span>, always.</p>
     <div class="verdict-row reveal in d3">
       <span class="vchip a">Auto</span>
       <span class="vchip c">Confirm</span>
@@ -486,33 +486,37 @@
 
 <!-- 08 IN ACTION -->
 <section id="action"><div class="wrap">
-  <div class="sechead reveal"><span class="secnum">08</span><h2>In action</h2></div>
-  <p class="lead reveal d1">Three runs of the same engine — one verdict each. (All proven by the test suite.)</p>
+  <div class="sechead reveal"><span class="secnum">08</span><h2>In action — live on DoorDash</h2></div>
+  <p class="lead reveal d1">The same deterministic engine now drives <b>real DoorDash</b>: it browses the live menu, ranks the safe options, and on an AUTO verdict <b>carts the dish and stops at the pay screen</b>. Verdicts proven by the test suite; carting proven live.</p>
   <div class="exs">
     <div class="ex a reveal d1">
-      <div class="top"><span class="v">AUTO</span><span class="tag">happy path</span></div>
+      <div class="top"><span class="v">AUTO</span><span class="tag">live · carts &amp; stops</span></div>
       <div class="body">
-        <div class="row"><span class="l">Trigger</span><span class="t">Noon run · Charlie's config</span></div>
-        <div class="row"><span class="l">Path</span><span class="t">$14 ≤ $18 · safe · in cap</span></div>
-        <div class="row"><span class="l">Result</span><span class="t q">"Ordered Pad Thai from Thai Spice, $14." Placed without interrupting him.</span></div>
+        <div class="row"><span class="l">Trigger</span><span class="t">"order my daily food" · live DoorDash</span></div>
+        <div class="row"><span class="l">Path</span><span class="t">Browse menu → rank safe → in budget → cart</span></div>
+        <div class="row"><span class="l">Result</span><span class="t q">Carted the dish on real DoorDash and <b>stopped at checkout</b> — <span class="mono" style="font-size:.82rem">charged: false</span>. No human in the loop, no charge.</span></div>
       </div>
     </div>
     <div class="ex c reveal d2">
-      <div class="top"><span class="v">CONFIRM</span><span class="tag">cost band</span></div>
+      <div class="top"><span class="v">CONFIRM</span><span class="tag">live · cost band</span></div>
       <div class="body">
-        <div class="row"><span class="l">Trigger</span><span class="t">Best safe option is $21</span></div>
-        <div class="row"><span class="l">Path</span><span class="t">$18 &lt; $21 ≤ $25 → confirm</span></div>
-        <div class="row"><span class="l">Result</span><span class="t q">Asks once. On silence it skips — an over-threshold order never places without a yes.</span></div>
+        <div class="row"><span class="l">Trigger</span><span class="t">Live dish over the auto-approve band</span></div>
+        <div class="row"><span class="l">Path</span><span class="t">auto &lt; price ≤ daily max → confirm</span></div>
+        <div class="row"><span class="l">Result</span><span class="t q">Asks once. On silence it skips — an over-threshold order never carts without a yes.</span></div>
       </div>
     </div>
     <div class="ex b reveal d3">
-      <div class="top"><span class="v">BLOCK</span><span class="tag">no safe option</span></div>
+      <div class="top"><span class="v">BLOCK</span><span class="tag">live · no safe option</span></div>
       <div class="body">
-        <div class="row"><span class="l">Trigger</span><span class="t">Open spots all peanut-risk; backup closed</span></div>
-        <div class="row"><span class="l">Path</span><span class="t">Safe set empty · fallback unavailable</span></div>
-        <div class="row"><span class="l">Result</span><span class="t q">"Nothing safe for your peanut allergy today. I won't relax that." Orders nothing.</span></div>
+        <div class="row"><span class="l">Trigger</span><span class="t">Restricted user · DoorDash can't prove peanut-free</span></div>
+        <div class="row"><span class="l">Path</span><span class="t">Safety unverifiable → refuse, before any cart</span></div>
+        <div class="row"><span class="l">Result</span><span class="t q">"Can't verify it's safe for your peanut allergy — I won't relax that." Carts nothing.</span></div>
       </div>
     </div>
+  </div>
+  <div class="reveal d3" style="margin-top:1.5rem;padding:1rem 1.2rem;border:1px solid rgba(255,255,255,.12);border-radius:12px;background:rgba(255,255,255,.03)">
+    <div class="mono" style="font-size:.82rem;opacity:.6;margin-bottom:.45rem">$ python3 run.py --provider doordash --claim-slot --config demo/charlie-unrestricted.yaml</div>
+    <div class="mono" style="font-size:.82rem">→ real menu → AUTO → add to cart → <b>STOP before pay</b> → {"status":"STOPPED_BEFORE_PAYMENT","charged":false}</div>
   </div>
 </div></section>
 
@@ -520,30 +524,31 @@
 
 <!-- 09 NEXT / SCOPE -->
 <section id="next"><div class="wrap">
-  <div class="sechead reveal"><span class="secnum">09</span><h2>What's next — and what I cut</h2></div>
-  <p class="lead reveal d1">Depth over breadth: prove the trust boundary first, leave the plumbing honest and labeled.</p>
+  <div class="sechead reveal"><span class="secnum">09</span><h2>What's shipped — and what's next</h2></div>
+  <p class="lead reveal d1">Depth over breadth: prove the trust boundary first, ship the dangerous parts deterministic and tested — and the real provider behind them.</p>
   <div class="twocol reveal d2">
+    <div>
+      <div class="colhead">Shipped</div>
+      <ul class="lst next">
+        <li><b>Live DoorDash adapter</b> — Playwright over a warmed profile: real menu, real cart, <b>hard-stop before pay</b>.</li>
+        <li><b>Deterministic engine</b> — AUTO / CONFIRM / BLOCK, zero LLM calls; safety &amp; budget in code.</li>
+        <li><b>Graceful degradation</b> — favorite closed → next store, reported honestly; one-run-at-a-time profile lock; fail-closed carts.</li>
+        <li><b>Daily schedule + idempotency</b> — OpenClaw cron claims one slot a day across manual / scheduled / retry / crash.</li>
+        <li><b>91 tests</b> — engine, config, run pipeline, adapter helpers.</li>
+      </ul>
+    </div>
     <div>
       <div class="colhead">Build next</div>
       <ul class="lst next">
-        <li><b>Real provider adapter</b> — Yelp / DoorDash behind the same interface.</li>
-        <li><b>Multi-meal slots</b> — same claim / idempotency model.</li>
-        <li><b>Persisted autonomy state</b> — rolling caps, incidents, self-throttle across runs.</li>
-        <li><b>Config wizard</b> — suggest local restaurants &amp; safe fallbacks.</li>
+        <li><b>Persisted spend ledger</b> — enforce rolling caps &amp; self-throttle across runs (today: per-run).</li>
+        <li><b>Any-store carting</b> — handle every customization-modal layout, not just the common ones.</li>
+        <li><b>Schedule sync</b> — drive the cron expression from <span class="mono" style="font-size:.82rem">order_time</span>.</li>
         <li><b>Dietary-uncertainty opt-in</b> — confirm instead of drop.</li>
-      </ul>
-    </div>
-    <div>
-      <div class="colhead">Deliberately not in v1</div>
-      <ul class="lst cut">
-        <li><b>Real payments / placement</b> — needs a provider + idempotent reconciliation.</li>
-        <li><b>Separate filter pre-pass</b> — safety is already enforced in <span class="mono" style="font-size:.82rem">decide()</span> &amp; tested.</li>
-        <li><b>Persistent ledger store</b> — skeleton keeps step records in memory.</li>
-        <li><b>Production scheduler</b> — external trigger; <span class="mono" style="font-size:.82rem">run.py</span> is the demo entry.</li>
-        <li><b>Rich notification flows</b> — channel delivery left to runtime.</li>
+        <li><b>Multi-meal slots</b> — same claim / idempotency model.</li>
       </ul>
     </div>
   </div>
+  <p class="reveal d3" style="margin-top:1.45rem;opacity:.72;font-size:.92rem">One thing is deliberately <b>never</b> built: <b>completing a charge</b>. The adapter stops at the pay screen by design — a real charge would need an explicit flag, a typed env confirmation, and wiring this build omits. <b>Stopping before pay is the feature, not a gap.</b></p>
 </div></section>
 
 <footer>
@@ -551,7 +556,7 @@
     <p class="big">Think exhaustively about trust; ship the dangerous parts deterministic and tested.</p>
     <div class="stack">
       <span class="sig">Charlie Yang · Daily Food Ordering Agent Skill</span>
-      <span class="sig" style="color:var(--faint)">SKILL.md · engine/ · references/ · run.py · tested</span>
+      <span class="sig" style="color:var(--faint)">SKILL.md · engine/ · providers/ · run.py · tested</span>
     </div>
   </div>
 </footer>
