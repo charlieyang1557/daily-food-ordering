@@ -120,6 +120,14 @@ _DRINK_KEYWORDS = (
     "milk tea", "boba", "juice", "soft drink", "bottled water", "coffee", "latte",
     "smoothie", "beer", "wine", "sake",
 )
+# Desserts to skip so the daily order is an ENTRÉE, not a sweet. Kept precise to
+# avoid catching savory dishes (no bare "sweet" → "Sweet Chili", no "cake" →
+# "fish cake"); "sticky rice" is the mango-sticky-rice dessert.
+_DESSERT_KEYWORDS = (
+    "ice cream", "sticky rice", "cheesecake", "tiramisu", "mochi", "pudding",
+    "shaved ice", "halo-halo", "halo halo", "fried banana", "dessert",
+    "creme brulee", "flan", "gelato", "sorbet", "brownie", "custard", "churro",
+)
 
 # Allergens DECLARED in a menu item's visible text (name + description). A
 # positive declaration is trusted ONLY in the safe direction — to REFUSE the item;
@@ -193,6 +201,11 @@ class DoorDashProvider:
     def _looks_like_drink(name: str) -> bool:
         n = (name or "").lower()
         return any(k in n for k in _DRINK_KEYWORDS)
+
+    @staticmethod
+    def _looks_like_dessert(name: str) -> bool:
+        n = (name or "").lower()
+        return any(k in n for k in _DESSERT_KEYWORDS)
 
     @staticmethod
     def _parse_allergens(text: str) -> list[str]:
@@ -623,9 +636,12 @@ class DoorDashProvider:
             except Exception:  # noqa: BLE001
                 continue
             name = self._menu_item_name(text)
-            # Daily order = an actual dish. Drop drinks and sub-meal-priced items
-            # so the engine's cheapest-candidate pick can't land on a $3 soda.
-            if price < _MEAL_PRICE_FLOOR_USD or self._looks_like_drink(name):
+            # Daily order = an actual entrée. Drop drinks, desserts, and sub-meal
+            # items so the engine's cheapest-candidate pick can't land on a $3
+            # soda or a mango sticky rice.
+            if (price < _MEAL_PRICE_FLOOR_USD
+                    or self._looks_like_drink(name)
+                    or self._looks_like_dessert(name)):
                 continue
             key = (name.lower(), price)
             if not name or key in seen:
