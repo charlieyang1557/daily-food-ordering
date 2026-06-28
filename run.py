@@ -247,7 +247,16 @@ def run(
 
         def _same(a: str, b: str) -> bool:
             na, nb = _norm(a), _norm(b)
-            return bool(na) and bool(nb) and (na in nb or nb in na)
+            if not na or not nb:
+                return False
+            if na == nb:  # equal after punctuation-normalization (McDonald's==McDonalds)
+                return True
+            # A MULTI-word favorite that is a full token-subset of the carted name
+            # (e.g. "Thaibodia Bistro" within "Thaibodia Bistro Milpitas"). A bare
+            # 1-word favorite ("Pho") must NOT swallow a different store ("Pho Newark").
+            short, long_ = (na, nb) if len(na) <= len(nb) else (nb, na)
+            st, lt = set(short.split()), set(long_.split())
+            return len(st) >= 2 and st <= lt
 
         carted = order_result.restaurant
         known = list(config.preferences.favorite_restaurants)

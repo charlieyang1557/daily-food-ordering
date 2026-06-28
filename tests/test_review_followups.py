@@ -129,6 +129,14 @@ def test_no_false_degradation_when_carted_is_the_fallback(tmp_path):
     assert "degradation_reason" not in s  # the pre-vetted fallback is not a "degradation"
 
 
+def test_generic_one_word_favorite_does_not_suppress_degradation(tmp_path):
+    prov = _CaptureProvider(price=12)  # carts "Pho Newark"
+    s = run(_write(tmp_path, preferences={"favorite_restaurants": ["Pho"]}),
+            provider=prov).order_result.summary
+    # a bare "Pho" must NOT token-swallow the genuinely-different "Pho Newark"
+    assert s.get("degradation_reason")
+
+
 # ---- Fix: strict clear_cart boolean (a destructive flag fails SAFE) ------------
 
 def test_clear_cart_strict_boolean():
