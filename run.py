@@ -205,7 +205,10 @@ def run(
                     config.budget.auto_approve_under_usd
                     if decision.status is DecisionStatus.AUTO else None
                 ),
-                clear_cart=clear_cart,
+                # Opt-in to clearing a non-empty cart via EITHER the --clear-cart
+                # flag OR the config (demo configs set clear_cart: true, so the
+                # agent need not remember the flag).
+                clear_cart=clear_cart or config.clear_cart,
             )
             # STOPPED_BEFORE_PAYMENT is "carted, not paid" — NOT a placed order:
             # it neither sets `placed` nor consumes the daily slot. Only a real

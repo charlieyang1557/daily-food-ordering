@@ -92,6 +92,7 @@ def load_config_from_dict(raw: Mapping[str, Any]) -> UserConfig:
         restrictions=restrictions,
         fallback=fallback,
         notifications=notifications,
+        clear_cart=bool(_first(raw, "clear_cart", default=False)),
     )
 
 

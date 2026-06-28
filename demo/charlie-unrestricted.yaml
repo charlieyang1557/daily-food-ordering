@@ -7,6 +7,10 @@
 budget:
   daily_max_usd: 80
   auto_approve_under_usd: 80
+# Demo convenience: auto-clear a leftover cart so the walkthrough is smooth. This
+# is the user's explicit opt-in (a real config leaves it off and fails closed on a
+# non-empty cart rather than wiping it).
+clear_cart: true
 preferences:
   cuisines: [Thai]
   # Pin the live walkthrough to a known-good store. discover() uses the first

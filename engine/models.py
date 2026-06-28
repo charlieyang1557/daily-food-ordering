@@ -76,6 +76,9 @@ class UserConfig:
     restrictions: RestrictionsConfig = field(default_factory=RestrictionsConfig)
     fallback: FallbackConfig = field(default_factory=FallbackConfig)
     notifications: NotificationsConfig = field(default_factory=NotificationsConfig)
+    # Opt-in: clear a non-empty DoorDash cart before ordering (destructive). Off by
+    # default (a real user's cart is never silently wiped); the demo configs set it.
+    clear_cart: bool = False
 
 
 @dataclass(init=False)

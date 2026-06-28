@@ -5,6 +5,7 @@
 budget:
   daily_max_usd: 50
   auto_approve_under_usd: 5
+clear_cart: true  # demo opt-in: auto-clear a leftover cart on the "yes" placement
 preferences:
   cuisines: [Thai]
   # Pin to the verified store: fail 2 is the one fail-case that CARTS (on "yes"),
