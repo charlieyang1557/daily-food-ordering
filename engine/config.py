@@ -207,9 +207,11 @@ def _first(raw: Mapping[str, Any], *names: str, default: Any = None) -> Any:
 
 
 def _as_bool(value: Any, field_name: str) -> bool:
-    """Strict boolean for a DESTRUCTIVE flag — must fail SAFE, never on `bool()`
-    coercion (where the string "false" is truthy). A real YAML bool passes through;
-    an explicit true/false token is honored; anything ambiguous is rejected loudly."""
+    """Strict boolean for a config flag — never `bool()` coercion (where the string
+    "false" is truthy). A real YAML bool passes through; an explicit true/false token
+    is honored; anything ambiguous is rejected loudly. The general config-bool path:
+    its first caller is the DESTRUCTIVE clear_cart flag (where failing SAFE matters),
+    and any future boolean field should reuse it unchanged."""
     if isinstance(value, bool):
         return value
     if value is None:
