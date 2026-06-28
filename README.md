@@ -14,7 +14,7 @@ python -m playwright install chromium     # for the real DoorDash provider
 
 python run.py                 # mock provider, happy path (dry & safe)
 python run.py --scenario over_budget       # trigger the budget-exceeded failure path
-pytest                        # 91 tests: engine + config + run + providers + adapter
+pytest                        # 92 tests: engine + config + run + providers + adapter
 ```
 
 Install as an OpenClaw skill on this machine (copies the skill + registers the
@@ -119,11 +119,12 @@ the actual charge is not implemented in this build.
 
 ## What I'd build next
 
-- **`place_order` store-page tuning** — discovery reads dishes from the search
-  page (robust), but those cards don't carry a per-dish store URL, so
-  `place_order` currently can't reliably navigate into the dish's store to add
-  it to cart (it fails closed). Carry the store URL through discovery and tune
-  the add-to-cart / checkout selectors against a live cart.
+- **Broaden add-to-cart across every store layout** — `place_order` already
+  carries the store URL through discovery, navigates into the dish's store,
+  completes the customization modal (radio / checkbox / select required groups),
+  and carts before hard-stopping at the pay screen. It's reliable on verified
+  stores; some stores' modal layouts still need coverage — tune against more live
+  carts and add a per-layout fallback.
 - Parse the full checkout breakdown (line items, fees, tax, tip) into
   `OrderResult.summary`. *(The total is already reconciled against `daily_max`,
   failing closed if missing or over — see `_reconcile_budget`.)*
