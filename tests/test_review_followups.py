@@ -137,6 +137,16 @@ def test_generic_one_word_favorite_does_not_suppress_degradation(tmp_path):
     assert s.get("degradation_reason")
 
 
+# ---- Fix: default --config is the unrestricted happy-path, not restricted prefs -
+
+def test_default_config_is_unrestricted_demo_happy_path():
+    # Interactive "order my daily food" must cart-and-stop even when the OpenClaw
+    # agent drops --config; the default must NOT be the restricted user_preferences.
+    from run import _parse_args
+    args = _parse_args(["--provider", "doordash", "--claim-slot"])
+    assert args.config == "demo/charlie-unrestricted.yaml"
+
+
 # ---- Fix: strict clear_cart boolean (a destructive flag fails SAFE) ------------
 
 def test_clear_cart_strict_boolean():

@@ -500,7 +500,11 @@ def _build_provider(args: argparse.Namespace) -> Provider:
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Daily food ordering — deterministic pipeline")
-    parser.add_argument("--config", default="user_preferences.yaml")
+    # Default is the unrestricted demo happy-path config, NOT user_preferences.yaml:
+    # the interactive "order my daily food" trigger must cart-and-stop even when the
+    # OpenClaw agent drops `--config` (it has dropped flags before). The scheduled cron
+    # and every `demo fail N` pass `--config` EXPLICITLY, so they are unaffected.
+    parser.add_argument("--config", default="demo/charlie-unrestricted.yaml")
     parser.add_argument("--provider", choices=["mock", "doordash"], default="mock")
     parser.add_argument(
         "--scenario",
