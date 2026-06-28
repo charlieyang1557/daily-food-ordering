@@ -918,58 +918,87 @@ class DoorDashProvider:
     def _complete_item_modal(self, page: Any) -> bool:
         """Satisfy ALL of a customization modal's required option groups, then Add.
 
-        Works uniformly across dishes with any number of required groups. The
-        radios carry no shared `name`, so we can't group them up front; instead
-        we click EVERY radio's row in DOM order. The last-clicked radio in each
-        group stays selected, so one-per-group falls out naturally; optional
-        checkbox add-ons are left untouched. We stop the moment the Add button
-        stops demanding a "required"/"select" choice (so a dish needing 2 groups
-        is handled just like one needing 1 — no "first section only" bug).
+        Required groups render three ways on DoorDash: radios ("choose exactly 1"),
+        checkboxes ("choose 1+"), and selects. We satisfy them in THAT order, re-
+        checking the Add button after every click and STOPPING the instant it stops
+        demanding a "required"/"select" choice. Consequences:
+        - a dish needing N groups is handled like one needing 1 (no "first section
+          only" bug) — we keep going while Add is still unsatisfied;
+        - the radio path is unchanged from before, so the known-good store still
+          works; checkbox/select passes only run when radios DIDN'T satisfy Add;
+        - we never pile on optional paid add-ons — the loop ends the moment Add
+          enables, so a "choose 1+" required group gets exactly one selection.
         """
         add_sel = "[data-anchor-id*='AddToCart'], [data-testid*='AddToCart']"
-        radios = page.locator("[role='dialog'] input[type='radio']")
-        total = min(radios.count(), 30)
-        # `total + 1` so we re-check the Add button after the final radio click.
-        for i in range(total + 1):
+
+        def add_ready() -> bool | None:
+            """True if the Add button is present and no longer demands a choice;
+            False if present but still required; None if there is no Add button."""
             add = page.locator(add_sel).first
             if add.count() == 0:
-                return False
+                return None
             try:
                 text = add.inner_text().lower()
             except Exception:  # noqa: BLE001
                 text = ""
-            if text and "required" not in text and "select" not in text:
-                self._click_resilient(add)
-                page.wait_for_timeout(1800)
-                return True
-            if i >= total:
-                break
-            radio = radios.nth(i)
-            # Reliable selection: a JS click on the input fires React's onChange
-            # even when the input is visually hidden — more dependable than
-            # force-clicking the row (which can land on padding and not register,
-            # leaving a required group unsatisfied and forcing a substitution).
-            selected = False
-            try:
-                # focus({preventScroll:true}) keeps the modal from jumping to each
-                # option as it's clicked — a JS click works on an off-screen radio,
-                # so we never need to scroll it into view. Smooth, not janky.
-                radio.evaluate(
-                    "el => { try { el.focus({preventScroll: true}); } catch (e) {} el.click(); }"
-                )
-                selected = True
-            except Exception:  # noqa: BLE001
-                pass
-            if not selected:
-                row = radio.locator("xpath=../..")  # grandparent = clickable row
+            return "required" not in text and "select" not in text
+
+        def click_add() -> bool:
+            add = page.locator(add_sel).first
+            if add.count() == 0:
+                return False
+            self._click_resilient(add)
+            page.wait_for_timeout(1800)
+            return True
+
+        for selector in (
+            "[role='dialog'] input[type='radio']",
+            "[role='dialog'] input[type='checkbox']",
+            "[role='dialog'] select",
+        ):
+            controls = page.locator(selector)
+            for i in range(min(controls.count(), 30)):
+                ready = add_ready()
+                if ready is None:
+                    return False  # modal/Add gone — let the caller close + bail
+                if ready:
+                    return click_add()
+                self._select_modal_control(controls.nth(i), is_select=selector.endswith("select"))
+                page.wait_for_timeout(350)
+        # Re-check once after exhausting every control (the last click may have
+        # been the one that satisfied the final required group).
+        return bool(add_ready()) and click_add()
+
+    def _select_modal_control(self, control: Any, *, is_select: bool = False) -> None:
+        """Select one option control: first real option for a <select>; otherwise a
+        JS click on the input (fires React's onChange even when the input is visually
+        hidden — more dependable than force-clicking the row, which can land on
+        padding and not register, leaving a required group unsatisfied)."""
+        if is_select:
+            for index in (1, 0):  # skip a placeholder at 0; fall back if only one
                 try:
-                    target = row if row.count() else radio
-                    target.scroll_into_view_if_needed()
-                    target.click(force=True, timeout=3500)
+                    control.select_option(index=index)
+                    return
                 except Exception:  # noqa: BLE001
-                    pass
-            page.wait_for_timeout(350)
-        return False
+                    continue
+            return
+        try:
+            # focus({preventScroll:true}) keeps the modal from jumping to each option
+            # as it's clicked — a JS click works on an off-screen input, so we never
+            # need to scroll it into view. Smooth, not janky.
+            control.evaluate(
+                "el => { try { el.focus({preventScroll: true}); } catch (e) {} el.click(); }"
+            )
+            return
+        except Exception:  # noqa: BLE001
+            pass
+        row = control.locator("xpath=../..")  # grandparent = clickable row
+        try:
+            target = row if row.count() else control
+            target.scroll_into_view_if_needed()
+            target.click(force=True, timeout=3500)
+        except Exception:  # noqa: BLE001
+            pass
 
     def _close_modal(self, page: Any) -> None:
         for selector in ("[aria-label^='Close']", "button[aria-label*='close' i]"):

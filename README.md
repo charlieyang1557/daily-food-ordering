@@ -14,7 +14,7 @@ python -m playwright install chromium     # for the real DoorDash provider
 
 python run.py                 # mock provider, happy path (dry & safe)
 python run.py --scenario over_budget       # trigger the budget-exceeded failure path
-pytest                        # 39 tests: engine + config + run + providers + adapter
+pytest                        # 91 tests: engine + config + run + providers + adapter
 ```
 
 Install as an OpenClaw skill on this machine (copies the skill + registers the
@@ -76,9 +76,12 @@ info), `placed`, and `order_result` (the structured receipt — for DoorDash,
 ## Triggerable failure paths
 
 ```bash
-python run.py --scenario over_budget   # BLOCK over_daily_max  (budget exceeded)
-python run.py --scenario unavailable   # BLOCK                 (item unavailable)
-python run.py --scenario allergen      # BLOCK allergy_violation (P0 safety)
+# charlie-no-fallback.yaml = restricted (vegetarian + peanut, $25) with NO fallback,
+# so each scenario shows its clean BLOCK. (The DEFAULT config is the unrestricted
+# happy-path demo, under which --scenario allergen has no allergy to violate.)
+python run.py --scenario over_budget --config demo/charlie-no-fallback.yaml  # BLOCK over_daily_max  (budget exceeded)
+python run.py --scenario unavailable --config demo/charlie-no-fallback.yaml  # BLOCK no_candidate     (item unavailable)
+python run.py --scenario allergen    --config demo/charlie-no-fallback.yaml  # BLOCK allergy_violation (P0 safety)
 python run.py --provider doordash --headless   # provider_unavailable (bot wall) — graceful
 ```
 

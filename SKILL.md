@@ -158,10 +158,14 @@ Do not attempt to click "Place Order" through any other tool.
 
 ## Triggering a failure path (for testing)
 
-    [code]  python3 run.py --scenario over_budget    # BLOCK over_daily_max
-    [code]  python3 run.py --scenario unavailable     # BLOCK (no available option)
-    [code]  python3 run.py --scenario empty           # BLOCK no_candidate
-    [code]  python3 run.py --scenario allergen        # BLOCK allergy_violation (P0)
+    # Pin the restricted, no-fallback config: the default config is the UNRESTRICTED
+    # happy-path demo, under which `--scenario allergen` has no allergy to violate and
+    # would AUTO-order. charlie-no-fallback.yaml (vegetarian + peanut, $25, no rescue)
+    # makes every scenario show its clean BLOCK.
+    [code]  python3 run.py --scenario over_budget  --config demo/charlie-no-fallback.yaml   # BLOCK over_daily_max
+    [code]  python3 run.py --scenario unavailable  --config demo/charlie-no-fallback.yaml   # BLOCK no_candidate
+    [code]  python3 run.py --scenario empty        --config demo/charlie-no-fallback.yaml   # BLOCK no_candidate
+    [code]  python3 run.py --scenario allergen     --config demo/charlie-no-fallback.yaml   # BLOCK allergy_violation (P0)
 
 ## Operating principles
 
