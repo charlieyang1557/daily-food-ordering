@@ -65,13 +65,13 @@ class _CaptureProvider:
         self.kwargs = {}
 
     def discover(self, config):
-        return [Candidate("R", "Dish", self.price, verified_safe=True)]
+        return [Candidate("Pho Newark", "Dish", self.price, verified_safe=True)]
 
     def place_order(self, candidate, **kwargs):
         self.kwargs = kwargs
         return OrderResult(
             status=OrderStatus.STOPPED_BEFORE_PAYMENT, provider=self.name,
-            restaurant="R", item_name="Dish", price_usd=candidate.price_usd,
+            restaurant="Pho Newark", item_name="Dish", price_usd=candidate.price_usd,
             idempotency_key=kwargs["idempotency_key"], charged=False,
         )
 
@@ -107,5 +107,5 @@ def test_degradation_reported_when_not_from_preferred(tmp_path):
     }))
     s = run(str(p), provider=prov).order_result.summary
     assert s["degraded_from_preferred"] == "Thaibodia Bistro"
-    assert s["ordered_from"] == "R"
+    assert s["ordered_from"] == "Pho Newark"
     assert "closed or unavailable" in s["degradation_reason"]
