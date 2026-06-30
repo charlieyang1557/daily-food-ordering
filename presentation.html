@@ -381,7 +381,7 @@
     <div class="ctrls">
       <div class="ctrl"><code>auto_approve_under</code><p>Per-order autonomous authority.</p></div>
       <div class="ctrl"><code>daily_max</code><p>The hard ceiling — never crossed.</p></div>
-      <div class="ctrl"><code>rolling_cap + window</code><p>Cumulative authority over time.</p></div>
+      <div class="ctrl"><code>rolling_cap + window</code><p>Cumulative authority over the window. <span style="opacity:.6">(Config knob; enforcement ships with the spend ledger.)</span></p></div>
     </div>
   </div>
 </div></section>
@@ -420,8 +420,8 @@
     <div class="deck reveal d1"><div class="n">01</div><h3>Tiered autonomy, not a boolean</h3><p>AUTO / CONFIRM / BLOCK with auto-approve as a trust dial — safe by default, never nagging.</p></div>
     <div class="deck reveal d1"><div class="n">02</div><h3>Consequence asymmetry</h3><p>Soft preferences rank; hard restrictions gate. Annoyance and the ER don't share a code path.</p></div>
     <div class="deck reveal d2"><div class="n">03</div><h3>Deterministic safety</h3><p>Allergy / dietary / budget are hard-coded — so it runs with any LLM, or none, and can't hallucinate a safety call.</p></div>
-    <div class="deck reveal d2"><div class="n">04</div><h3>Idempotency &amp; reconciliation</h3><p>One order per day-slot across manual, scheduled, retry, and crash. The key also reconciles charged-but-unknown.</p></div>
-    <div class="deck reveal d3"><div class="n">05</div><h3>Self-throttle after a breach</h3><p>A serious mistake drops the agent's own autonomy until the user restores it. Trust spent back down.</p></div>
+    <div class="deck reveal d2"><div class="n">04</div><h3>Idempotency &amp; reconciliation</h3><p>One order per day-slot across manual, scheduled, retry, and crash — only a placed order burns the day. Plus a real-total budget re-check before the stop.</p></div>
+    <div class="deck reveal d3"><div class="n">05</div><h3>Self-throttle after a breach</h3><p>The recovery model: a breach should cost the agent its own autonomy — the trust dial runs both ways. (Designed; ships with the spend ledger.)</p></div>
     <div class="deck reveal d3"><div class="n">06</div><h3>Block ≠ Confirm</h3><p>Confirm what's within authority; block what crosses a hard line. Never put the unsafe up for approval.</p></div>
   </div>
 </div></section>
@@ -466,7 +466,7 @@
 <!-- 07 TRUST / RECOVERY -->
 <section id="trust"><div class="wrap">
   <div class="sechead reveal"><span class="secnum">07</span><h2>When prevention fails: earning trust back</h2></div>
-  <p class="lead reveal d1">The only post-order failure path. The damage is done — so the playbook shifts from prevention to recovery, by inherited severity.</p>
+  <p class="lead reveal d1">The only post-order failure path. v1 ships the prevention side; this is the <em>designed</em> recovery playbook for when prevention fails — the post-order hooks, by inherited severity.</p>
   <div class="ladder reveal d2">
     <div class="rung p0"><div class="num">01</div><div><h3>Contain harm first</h3><p>For a P0, the first action isn't a refund — it's a loud "DO NOT EAT." Stopping someone eating an allergen outranks recovering $14.</p></div></div>
     <div class="rung"><div class="num">02</div><div><h3>Undo if possible</h3><p>Attempt to cancel within the provider's window.</p></div></div>
